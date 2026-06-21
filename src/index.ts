@@ -12,9 +12,11 @@ import { build } from "./build.js";
 import { parseIR } from "./ir.js";
 import { planPlacement } from "./geometry.js";
 import { UndoManager } from "./undo.js";
-import { config } from "./config.js";
+import { config, pipelineEnabled } from "./config.js";
 import { log } from "./log.js";
 import { voxelizeFile } from "./voxelize/index.js";
+import { classifyIntent } from "./pipeline/intent.js";
+import { resolveCharacterGrid } from "./pipeline/orchestrate.js";
 import type { BoxIR, HouseIR, TowerIR, WallIR, BridgeIR, GridIR } from "./ir.js";
 
 const server = new MinecraftServer();
@@ -25,6 +27,16 @@ function includesAny(text: string, words: string[]): boolean {
 }
 
 async function handleBuild(utterance: string): Promise<void> {
+  // v4：外部キーが設定済みなら、まず「キャラ取得 vs パラメトリック」を判定して振り分ける（①）。
+  // 未設定なら v4 をスキップし、余分な Claude 呼び出しもせず従来どおり（§配線）。
+  if (pipelineEnabled()) {
+    const intent = await classifyIntent(utterance);
+    if (intent.kind === "character") {
+      await handleMake(intent.subject, intent.targetHeight);
+      return;
+    }
+  }
+
   const state = await server.queryPlayerState();
   if (!state) {
     await server.say("§c座標が取得できませんでした。");
@@ -94,10 +106,7 @@ async function buildHouseFlow(ir: HouseIR, player: { x: number; y: number; z: nu
 
   const built = build(ir, origin);
   log.info("送信コマンド数", built.commands.length);
-  for (const cmd of built.commands) {
-    const body = await server.runCommand(cmd);
-    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
-  }
+  await server.runCommands(built.commands);
   undo.record(built);
 
   const { w, d } = ir.footprint;
@@ -113,10 +122,7 @@ async function buildTowerFlow(ir: TowerIR, player: { x: number; y: number; z: nu
 
   const built = build(ir, origin);
   log.info("送信コマンド数", built.commands.length);
-  for (const cmd of built.commands) {
-    const body = await server.runCommand(cmd);
-    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
-  }
+  await server.runCommands(built.commands);
   undo.record(built);
 
   const { w, d } = ir.footprint;
@@ -133,10 +139,7 @@ async function buildWallFlow(ir: WallIR, player: { x: number; y: number; z: numb
 
   const built = build(ir, origin);
   log.info("送信コマンド数", built.commands.length);
-  for (const cmd of built.commands) {
-    const body = await server.runCommand(cmd);
-    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
-  }
+  await server.runCommands(built.commands);
   undo.record(built);
 
   await server.say(`§a防壁を建てました（長さ${ir.length} / 高さ${ir.height} / 正面:${facing}）。取り消すには「もどして」。`);
@@ -151,10 +154,7 @@ async function buildBridgeFlow(ir: BridgeIR, player: { x: number; y: number; z: 
 
   const built = build(ir, origin);
   log.info("送信コマンド数", built.commands.length);
-  for (const cmd of built.commands) {
-    const body = await server.runCommand(cmd);
-    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
-  }
+  await server.runCommands(built.commands);
   undo.record(built);
 
   await server.say(`§a橋を架けました（長さ${ir.span} / 幅${ir.width} / 正面:${facing}）。取り消すには「もどして」。`);
@@ -213,10 +213,7 @@ async function placeAndBuildGrid(ir: GridIR, label: string): Promise<void> {
 
   const built = build(ir, origin);
   log.info("送信コマンド数", built.commands.length);
-  for (const cmd of built.commands) {
-    const body = await server.runCommand(cmd);
-    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
-  }
+  await server.runCommands(built.commands);
   undo.record(built);
 
   const { w, h, d } = ir.size;
@@ -265,16 +262,37 @@ async function handleVoxelize(argline: string): Promise<void> {
   await placeAndBuildGrid(ir, file);
 }
 
+/**
+ * v4「喋るだけ」キャラ建築（①意図はすでに解決済み・②③④⑤＋fallback は orchestrate へ）。
+ * 立体生成が破綻したら平面でフォールバックし、その旨を通知する（AC-38）。
+ */
+async function handleMake(subject: string, targetHeight?: number): Promise<void> {
+  await server.say(`§7「${subject}」を生成中…（少し時間がかかります）`);
+  const res = await resolveCharacterGrid(subject, targetHeight);
+  if (!res.ok) {
+    await server.say(`§c「${subject}」を作れませんでした: ${res.error}`);
+    return;
+  }
+  // 安全網：ボクセル化/フォールバック出力も parseIR で再検証してから建てる。
+  const parsed = parseIR(res.ir);
+  if (!parsed.ok || parsed.ir.type !== "grid") {
+    await server.say(`§c生成結果が不正です: ${parsed.ok ? "型不一致" : parsed.error}`);
+    return;
+  }
+  if (res.mode === "flat") {
+    await server.say("§e立体生成に失敗したため、平面で建てます。");
+  }
+  await placeAndBuildGrid(parsed.ir, subject);
+}
+
 async function handleUndo(): Promise<void> {
   const cmds = undo.buildUndoCommands();
   if (!cmds) {
     await server.say("§e取り消せる建築がありません。");
     return;
   }
-  log.info("Undo コマンド", cmds);
-  for (const cmd of cmds) {
-    await server.runCommand(cmd);
-  }
+  log.info("Undo コマンド数", cmds.length);
+  await server.runCommands(cmds);
   await server.say("§a直前の建築を取り消しました。");
 }
 

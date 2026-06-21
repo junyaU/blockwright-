@@ -18,11 +18,40 @@ import {
 
 export type MeshFill = "shell" | "solid";
 type RGB = [number, number, number];
+type UV = [number, number];
+type JimpImg = Awaited<ReturnType<typeof Jimp.read>>;
 const DEFAULT_COLOR: RGB = [150, 150, 150];
 
-/** 色を持つ三角形（占有時に最寄り三角形の色を引くため、読込時に代表色を確定する）。 */
-interface ColoredTri extends Tri {
+/**
+ * 三角形。color は代表色（フォールバック）、uv/tex があれば voxel ごとに
+ * バリセントリック補間でテクスチャをサンプルして三角形内の細部を拾う。
+ */
+export interface ColoredTri extends Tri {
   color: RGB;
+  uv?: [UV, UV, UV];
+  tex?: JimpImg;
+}
+
+/** テクスチャの (u,v)（0..1, glTF は上原点）→ RGB。 */
+function texelAt(img: JimpImg, u: number, v: number): RGB {
+  const tw = img.bitmap.width, th = img.bitmap.height;
+  const uu = ((u % 1) + 1) % 1;
+  const vv = ((v % 1) + 1) % 1;
+  const px = Math.min(tw - 1, Math.floor(uu * tw));
+  const py = Math.min(th - 1, Math.floor(vv * th));
+  const i = (py * tw + px) * 4;
+  return [img.bitmap.data[i]!, img.bitmap.data[i + 1]!, img.bitmap.data[i + 2]!];
+}
+
+/** 三角形上の点（バリセントリック ba,bb）の色：uv/tex があれば補間サンプル、無ければ代表色。 */
+function sampleTriColor(t: ColoredTri, ba: number, bb: number): RGB {
+  if (t.uv && t.tex) {
+    const bc = 1 - ba - bb;
+    const u = t.uv[0][0] * bc + t.uv[1][0] * ba + t.uv[2][0] * bb;
+    const v = t.uv[0][1] * bc + t.uv[1][1] * ba + t.uv[2][1] * bb;
+    return texelAt(t.tex, u, v);
+  }
+  return t.color;
 }
 
 export interface MeshOptions {
@@ -86,29 +115,24 @@ async function parseGlb(file: string): Promise<ColoredTri[]> {
   const io = new NodeIO();
   const doc = await io.read(file);
   const tris: ColoredTri[] = [];
-  const textureCache = new Map<unknown, Awaited<ReturnType<typeof Jimp.read>> | null>();
+  type Mat = ReturnType<ReturnType<typeof doc.getRoot>["listMaterials"]>[number];
+  const textureCache = new Map<unknown, JimpImg | null>();
 
-  async function texColor(mat: ReturnType<ReturnType<typeof doc.getRoot>["listMaterials"]>[number] | null, uv: [number, number] | null): Promise<RGB> {
-    if (!mat) return DEFAULT_COLOR;
+  /** 材質の baseColorTexture を decode（キャッシュ）。無ければ null。 */
+  async function getTexture(mat: Mat | null): Promise<JimpImg | null> {
+    if (!mat) return null;
     const tex = mat.getBaseColorTexture();
-    if (tex && uv) {
-      let img = textureCache.get(tex) ?? null;
-      if (!textureCache.has(tex)) {
-        const bytes = tex.getImage();
-        img = bytes ? await Jimp.read(Buffer.from(bytes)) : null;
-        textureCache.set(tex, img);
-      }
-      if (img) {
-        const tw = img.bitmap.width, th = img.bitmap.height;
-        const u = ((uv[0] % 1) + 1) % 1;
-        const v = ((uv[1] % 1) + 1) % 1;
-        const px = Math.min(tw - 1, Math.floor(u * tw));
-        const py = Math.min(th - 1, Math.floor(v * th)); // glTF UV は上原点
-        const i = (py * tw + px) * 4;
-        return [img.bitmap.data[i]!, img.bitmap.data[i + 1]!, img.bitmap.data[i + 2]!];
-      }
+    if (!tex) return null;
+    if (!textureCache.has(tex)) {
+      const bytes = tex.getImage();
+      textureCache.set(tex, bytes ? await Jimp.read(Buffer.from(bytes)) : null);
     }
-    const f = mat.getBaseColorFactor();
+    return textureCache.get(tex) ?? null;
+  }
+
+  /** テクスチャが無い材質の代表色（baseColorFactor / グレー）。 */
+  function baseColorOf(mat: Mat | null): RGB {
+    const f = mat?.getBaseColorFactor();
     if (f) return [Math.round(f[0]! * 255), Math.round(f[1]! * 255), Math.round(f[2]! * 255)];
     return DEFAULT_COLOR;
   }
@@ -125,12 +149,14 @@ async function parseGlb(file: string): Promise<ColoredTri[]> {
         const mat = prim.getMaterial();
         const indices = prim.getIndices();
         const count = indices ? indices.getCount() : pos.getCount();
+        const tex = await getTexture(mat);
+        const baseColor = baseColorOf(mat);
         const getPos = (vi: number): Vec3f => {
           const e = [0, 0, 0];
           pos.getElement(vi, e);
           return transformPoint(world, { x: e[0]!, y: e[1]!, z: e[2]! });
         };
-        const getUv = (vi: number): [number, number] | null => {
+        const getUv = (vi: number): UV | null => {
           if (!uvAcc) return null;
           const e = [0, 0];
           uvAcc.getElement(vi, e);
@@ -141,13 +167,10 @@ async function parseGlb(file: string): Promise<ColoredTri[]> {
           const i1 = indices ? indices.getScalar(i + 1) : i + 1;
           const i2 = indices ? indices.getScalar(i + 2) : i + 2;
           const a = getPos(i0), b = getPos(i1), c = getPos(i2);
-          // 代表色は重心 UV のテクセル（無ければ baseColorFactor / グレー）。
+          // UV とテクスチャを三角形に保持し、色は voxel ごとに補間サンプルする（細部を残す）。
           const uv0 = getUv(i0), uv1 = getUv(i1), uv2 = getUv(i2);
-          const cuv: [number, number] | null = uv0 && uv1 && uv2
-            ? [(uv0[0] + uv1[0] + uv2[0]) / 3, (uv0[1] + uv1[1] + uv2[1]) / 3]
-            : null;
-          const color = await texColor(mat, cuv);
-          tris.push({ a, b, c, color });
+          const uv: [UV, UV, UV] | undefined = uv0 && uv1 && uv2 ? [uv0, uv1, uv2] : undefined;
+          tris.push({ a, b, c, color: baseColor, ...(uv && tex ? { uv, tex } : {}) });
         }
       }
     }
@@ -161,7 +184,7 @@ async function parseGlb(file: string): Promise<ColoredTri[]> {
   return tris;
 }
 
-async function loadMesh(file: string): Promise<ColoredTri[]> {
+export async function loadMesh(file: string): Promise<ColoredTri[]> {
   if (/\.obj$/i.test(file)) return parseObj(readFileSync(file, "utf8"));
   if (/\.(glb|gltf)$/i.test(file)) return parseGlb(file);
   throw new Error(`未対応のメッシュ拡張子です: ${file}`);
@@ -234,14 +257,14 @@ function propagateColors(occupied: Set<number>, shellColor: Map<number, RGB>, di
 
 /** ColoredTri 群 → GridIR（occupancy.ts の占有を使い、色量子化して詰める）。 */
 export function trisToGridIR(tris: ColoredTri[], opts: MeshOptions = {}): GridIR {
-  const targetHeight = Math.max(1, Math.round(opts.targetHeight ?? 24));
+  const targetHeight = Math.max(1, Math.round(opts.targetHeight ?? 48));
   const fill: MeshFill = opts.fill ?? "solid";
   const gs = fitToGrid(aabbOf(tris), targetHeight);
   const dims = gs.dims;
 
-  const shellMap = rasterizeShell(tris, gs); // cell → triIndex
+  const shellMap = rasterizeShell(tris, gs); // cell → 表面サンプル(ti, ba, bb)
   const shellColor = new Map<number, RGB>();
-  for (const [cell, ti] of shellMap) shellColor.set(cell, tris[ti]!.color);
+  for (const [cell, s] of shellMap) shellColor.set(cell, sampleTriColor(tris[s.ti]!, s.ba, s.bb));
 
   const occupied = fill === "solid" ? fillSolid(shellMap.keys(), dims) : new Set(shellMap.keys());
   const colors = fill === "solid" ? propagateColors(occupied, shellColor, dims) : shellColor;

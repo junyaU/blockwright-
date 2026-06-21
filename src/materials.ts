@@ -69,6 +69,10 @@ const ALIASES: Record<string, string> = {
   brick_block: "bricks",
   brick: "bricks",
   glass_pane: "glass",
+  // JE 名 → BE 名（BE は単数形・別名のものを補正）。
+  snow_block: "snow",
+  nether_bricks: "nether_brick",
+  red_nether_bricks: "red_nether_brick",
 };
 
 export interface ResolvedMaterial {

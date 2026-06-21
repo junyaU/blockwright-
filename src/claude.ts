@@ -106,7 +106,8 @@ function extractJson(text: string): string {
 }
 
 let client: Anthropic | undefined;
-function getClient(): Anthropic {
+/** Anthropic クライアントを遅延生成して共有する（intent 抽出など他経路も再利用）。 */
+export function getClient(): Anthropic {
   if (!client) client = new Anthropic({ apiKey: requireApiKey() });
   return client;
 }

@@ -19,6 +19,10 @@ export interface Config {
   undoWords: string[];
   /** 素材検証で不明 ID だったときの代替（§6.3 FR-09）。 */
   fallbackMaterial: string;
+  /** v4 ②画像取得（SerpAPI）キー。未設定なら v4 パイプラインは無効。 */
+  imageSearchApiKey: string;
+  /** v4 ③image→3D（Meshy）キー。未設定なら立体生成不可（平面フォールバック）。 */
+  meshyApiKey: string;
 }
 
 function intFromEnv(name: string, fallback: number): number {
@@ -36,7 +40,17 @@ export const config: Config = {
   triggerWords: ["建てて", "たてて", "建てろ", "たてろ", "作って", "つくって", "架けて", "かけて", "build"],
   undoWords: ["もどして", "戻して", "取り消して", "とりけして", "undo"],
   fallbackMaterial: "minecraft:stone",
+  imageSearchApiKey: process.env.SERPAPI_API_KEY ?? "",
+  meshyApiKey: process.env.MESHY_API_KEY ?? "",
 };
+
+/**
+ * v4「喋るだけ」パイプラインが使えるか（②画像取得キーがあるか）。
+ * 未設定なら「○○作って」は既存パラメトリック経路のみで処理する（余分な Claude 呼び出しもしない）。
+ */
+export function pipelineEnabled(): boolean {
+  return config.imageSearchApiKey.trim() !== "";
+}
 
 /** Claude を使う直前に呼ぶ。キー未設定なら明示的に失敗させる。 */
 export function requireApiKey(): string {

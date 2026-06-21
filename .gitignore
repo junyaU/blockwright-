@@ -16,6 +16,9 @@ build/
 logs/
 npm-debug.log*
 
+# v4 生成物（取得画像・生成3D）。個人ローカル限定でコミットしない（R3）。
+assets/generated/
+
 # OS / エディタ
 .DS_Store
 Thumbs.db

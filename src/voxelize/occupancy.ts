@@ -47,11 +47,19 @@ function dist(a: Vec3f, b: Vec3f): number {
   return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
+/** セルを最後に塗った表面サンプル：三角形 index ＋その点のバリセントリック座標。 */
+export interface ShellSample {
+  ti: number;
+  ba: number;
+  bb: number;
+}
+
 /**
- * 三角形群を shell にラスタライズ。各占有セル → その色決定に使う triangle index を返す
- * （最後に書いた三角形が勝つ）。色は呼び出し側が triIndex から決める。
+ * 三角形群を shell にラスタライズ。各占有セル → 最後に当たった表面サンプル（triangle index と
+ * バリセントリック座標 ba,bb）を返す。呼び出し側はこの点で色（テクスチャ等）をサンプルできる
+ * ので、三角形内の細部（目の白等）を取りこぼさない。
  */
-export function rasterizeShell(tris: Tri[], gs: GridSpace): Map<number, number> {
+export function rasterizeShell(tris: Tri[], gs: GridSpace): Map<number, ShellSample> {
   const { min, voxelSize, dims } = gs;
   const cellOf = (p: Vec3f): number | null => {
     const x = Math.floor((p.x - min.x) / voxelSize);
@@ -66,7 +74,7 @@ export function rasterizeShell(tris: Tri[], gs: GridSpace): Map<number, number> 
     return cellIndex(cx, cy, cz, dims);
   };
 
-  const out = new Map<number, number>();
+  const out = new Map<number, ShellSample>();
   for (let ti = 0; ti < tris.length; ti++) {
     const t = tris[ti]!;
     const maxEdge = Math.max(dist(t.a, t.b), dist(t.a, t.c), dist(t.b, t.c));
@@ -82,7 +90,7 @@ export function rasterizeShell(tris: Tri[], gs: GridSpace): Map<number, number> 
           z: t.a.z * bc + t.b.z * ba + t.c.z * bb,
         };
         const c = cellOf(p);
-        if (c !== null) out.set(c, ti);
+        if (c !== null) out.set(c, { ti, ba, bb });
       }
     }
   }

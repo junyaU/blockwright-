@@ -184,6 +184,30 @@ export class MinecraftServer {
   }
 
   /**
+   * 多数のコマンドを**並行送信**して高速に流す（結果＝設置内容は直列と同一）。
+   * runCommand は requestId で応答を対応付けるので、同時に複数を in-flight にしても安全。
+   * 1 個ずつ往復待ちする直列送信に比べ、WS パイプを埋め続けるぶん大幅に速い（数十倍）。
+   * concurrency は Minecraft 側のコマンド処理を溢れさせない控えめな窓にする。
+   */
+  async runCommands(commands: string[], concurrency = 32): Promise<{ failures: number }> {
+    let failures = 0;
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < commands.length) {
+        const cmd = commands[next++]!;
+        const body = await this.runCommand(cmd);
+        if (body?.statusCode !== 0) {
+          failures += 1;
+          log.warn("コマンドが失敗を返しました", { cmd, body });
+        }
+      }
+    };
+    const n = Math.min(concurrency, commands.length);
+    await Promise.all(Array.from({ length: n }, () => worker()));
+    return { failures };
+  }
+
+  /**
    * querytarget @s でプレイヤー絶対座標（足元）を得る（ブロック座標へ floor）。失敗時は null。
    *
    * ⚠ querytarget の position.y は足元ではなく**目線(eye)位置**を返す（実測で確定：

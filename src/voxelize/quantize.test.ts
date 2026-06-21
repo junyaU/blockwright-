@@ -17,6 +17,10 @@ describe("quantizeLab 最近傍 (FR-53)", () => {
   it("ほぼ黒は black 系へ", () => {
     expect(quantizeLab(12, 13, 16)).toMatch(/black/);
   });
+
+  it("濃紺（目の色）は青系（lapis/blue）へ", () => {
+    expect(quantizeLab(30, 40, 90)).toMatch(/lapis|blue/);
+  });
 });
 
 describe("代表色テーブルの健全性 (FR-54)", () => {

@@ -221,8 +221,8 @@ export const BRIDGE_PIER_DEPTH = 4;
 /** grid パラメータの許容範囲（§v2.x §6.3）。 */
 export const GRID_SIZE_MIN = 1;
 export const GRID_SIZE_MAX = 64;
-/** 密データ肥大の暴走防止（FR-46）。テストデータ前提で小さく保つ。 */
-export const GRID_VOLUME_MAX = 32768;
+/** 密データ肥大の暴走防止（FR-46）。v4 のキャラ建築で大きめを許すため引き上げ（各次元 ≤64 は別途）。 */
+export const GRID_VOLUME_MAX = 200000;
 
 /** 数値を整数化し min..max にクランプ。範囲外なら warnings に記録。非数値は null。 */
 function clampInt(
