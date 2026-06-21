@@ -14,6 +14,7 @@ import { buildHouse } from "./house.js";
 import { buildTower } from "./tower.js";
 import { buildWall } from "./wall.js";
 import { buildBridge } from "./bridge.js";
+import { buildGrid } from "./grid.js";
 import { log } from "./log.js";
 
 /**
@@ -128,7 +129,8 @@ export function build(ir: IR, origin: Vec3): BuildResult {
       return buildWall(ir, origin);
     case "bridge":
       return buildBridge(ir, origin);
-    // case "grid": return buildGrid(ir, origin); // 将来（v2.x エスケープハッチ）
+    case "grid":
+      return buildGrid(ir, origin);
     default:
       throw new Error(`unknown IR type: ${(ir as { type: string }).type}`);
   }

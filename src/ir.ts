@@ -14,8 +14,8 @@ export interface Vec3 {
   z: number;
 }
 
-/** v2: box（v0）・house（v1）に tower/wall/bridge を追加した判別ユニオン。将来 grid 等を追加可。 */
-export type IR = BoxIR | HouseIR | TowerIR | WallIR | BridgeIR;
+/** v2.x: box・house・tower/wall/bridge に grid（自由形状の器）を追加した判別ユニオン。 */
+export type IR = BoxIR | HouseIR | TowerIR | WallIR | BridgeIR | GridIR;
 
 export interface BoxIR {
   /** discriminator（将来の分岐キー）。 */
@@ -158,6 +158,24 @@ export interface BridgeIR {
   facing?: Facing | "auto";
 }
 
+/**
+ * 自由形状の器（§v2.x）。dense voxel をそのまま流し込む。パラメトリック生成器で
+ * 表せない不規則オブジェクト用のエスケープハッチ。
+ * ★AI には埋めさせない（プロンプトに載せない）。供給はフィクスチャ/開発注入のみ。
+ * 次元順序は固定：voxels[y][z][x]（y=下→上, z=正面lz=0→奥, x=列）。0 = 空気（予約）。
+ */
+export interface GridIR {
+  type: "grid";
+  /** ブロック寸法。各 1..64。voxels の次元と厳密一致が必要。 */
+  size: { w: number; h: number; d: number };
+  /** dense voxel data。値は palette への index。0 は air（skip）で予約。 */
+  voxels: number[][][];
+  /** index → BEブロックID。0 は予約（air）なので含めない。 */
+  palette: Record<number, string>;
+  /** 既定 "auto"（プレイヤー yaw 由来）。build 前に index 側で具体方位へ解決する。 */
+  facing?: Facing | "auto";
+}
+
 /** build() の返り値。 */
 export interface BuildResult {
   /** 設置領域の絶対座標（Undo 用）。 */
@@ -199,6 +217,12 @@ export const BRIDGE_WIDTH_MIN = 2;
 export const BRIDGE_WIDTH_MAX = 16;
 /** 橋脚の固定の深さ（ブロック数、下方向）。 */
 export const BRIDGE_PIER_DEPTH = 4;
+
+/** grid パラメータの許容範囲（§v2.x §6.3）。 */
+export const GRID_SIZE_MIN = 1;
+export const GRID_SIZE_MAX = 64;
+/** 密データ肥大の暴走防止（FR-46）。テストデータ前提で小さく保つ。 */
+export const GRID_VOLUME_MAX = 32768;
 
 /** 数値を整数化し min..max にクランプ。範囲外なら warnings に記録。非数値は null。 */
 function clampInt(
@@ -254,8 +278,10 @@ export function parseIR(raw: unknown): ParseResult {
       return parseWallIR(obj);
     case "bridge":
       return parseBridgeIR(obj);
+    case "grid":
+      return parseGridIR(obj);
     default:
-      return { ok: false, error: `未対応の IR type: ${JSON.stringify(obj.type)}（box / house / tower / wall / bridge）。` };
+      return { ok: false, error: `未対応の IR type: ${JSON.stringify(obj.type)}（box / house / tower / wall / bridge / grid）。` };
   }
 }
 
@@ -680,6 +706,97 @@ function parseBridgeIR(obj: Record<string, unknown>): ParseResult {
     piers,
     ...(palette !== null ? { palette } : {}),
     ...(style !== undefined ? { style } : {}),
+    facing,
+  };
+  return { ok: true, ir, warnings };
+}
+
+/** 整数 min..max 内か（クランプせず判定のみ。grid は voxels と一致必須なのでクランプ不可）。 */
+function intInRange(value: unknown, min: number, max: number): boolean {
+  return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
+}
+
+function parseGridIR(obj: Record<string, unknown>): ParseResult {
+  const warnings: string[] = [];
+
+  // size 検証（クランプではなく拒否：voxels 次元と厳密一致が必要）
+  const size = obj.size;
+  if (typeof size !== "object" || size === null) {
+    return { ok: false, error: "size がありません。" };
+  }
+  const s = size as Record<string, unknown>;
+  if (!intInRange(s.w, GRID_SIZE_MIN, GRID_SIZE_MAX) || !intInRange(s.h, GRID_SIZE_MIN, GRID_SIZE_MAX) || !intInRange(s.d, GRID_SIZE_MIN, GRID_SIZE_MAX)) {
+    return { ok: false, error: `size.w/h/d は整数 ${GRID_SIZE_MIN}..${GRID_SIZE_MAX} である必要があります。` };
+  }
+  const w = s.w as number;
+  const h = s.h as number;
+  const d = s.d as number;
+
+  if (w * h * d > GRID_VOLUME_MAX) {
+    return { ok: false, error: `grid が大きすぎます（${w}x${h}x${d}=${w * h * d} > ${GRID_VOLUME_MAX}）。` };
+  }
+
+  // voxels 次元整合（FR-42）。voxels[y][z][x]、全要素が非負整数。
+  const voxels = obj.voxels;
+  if (!Array.isArray(voxels) || voxels.length !== h) {
+    return { ok: false, error: `voxels の y 次元が size.h(${h}) と一致しません。` };
+  }
+  const usedIndices = new Set<number>();
+  for (let y = 0; y < h; y++) {
+    const layer = voxels[y];
+    if (!Array.isArray(layer) || layer.length !== d) {
+      return { ok: false, error: `voxels[${y}] の z 次元が size.d(${d}) と一致しません。` };
+    }
+    for (let z = 0; z < d; z++) {
+      const row = layer[z];
+      if (!Array.isArray(row) || row.length !== w) {
+        return { ok: false, error: `voxels[${y}][${z}] の x 次元が size.w(${w}) と一致しません。` };
+      }
+      for (let x = 0; x < w; x++) {
+        const cell = row[x];
+        if (typeof cell !== "number" || !Number.isInteger(cell) || cell < 0) {
+          return { ok: false, error: `voxels[${y}][${z}][${x}] は非負整数である必要があります。` };
+        }
+        if (cell !== 0) usedIndices.add(cell);
+      }
+    }
+  }
+
+  // palette 検証：voxels に現れる全非 0 index が存在し、各値が非空文字列。
+  if (typeof obj.palette !== "object" || obj.palette === null) {
+    return { ok: false, error: "palette がありません。" };
+  }
+  const rawPal = obj.palette as Record<string, unknown>;
+  const palette: Record<number, string> = {};
+  for (const [k, v] of Object.entries(rawPal)) {
+    const idx = Number(k);
+    if (!Number.isInteger(idx) || idx < 0) {
+      warnings.push(`palette のキー "${k}" は非負整数でないため無視しました。`);
+      continue;
+    }
+    if (idx === 0) {
+      warnings.push("palette のキー 0 は air 予約のため無視しました。");
+      continue;
+    }
+    if (typeof v !== "string" || v.trim() === "") {
+      warnings.push(`palette[${idx}] が文字列でないため無視しました。`);
+      continue;
+    }
+    palette[idx] = v.trim();
+  }
+  for (const idx of usedIndices) {
+    if (palette[idx] === undefined) {
+      return { ok: false, error: `voxels が使う index ${idx} が palette にありません。` };
+    }
+  }
+
+  const facing = parseFacing(obj.facing, warnings);
+
+  const ir: GridIR = {
+    type: "grid",
+    size: { w, h, d },
+    voxels: voxels as number[][][],
+    palette,
     facing,
   };
   return { ok: true, ir, warnings };

@@ -4,9 +4,12 @@
  * 設計の背骨は IR seam（build）。ここはオーケストレーションだけを担い、
  * 座標計算・素材解決などの正確さは下流（決定論的なコード）に委ねる。
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { MinecraftServer, type PlayerMessageBody } from "./server.js";
 import { generateIR } from "./claude.js";
 import { build } from "./build.js";
+import { parseIR } from "./ir.js";
 import { planPlacement } from "./geometry.js";
 import { UndoManager } from "./undo.js";
 import { config } from "./config.js";
@@ -43,8 +46,12 @@ async function handleBuild(utterance: string): Promise<void> {
     await buildWallFlow(result.ir, state.pos, state.yaw);
   } else if (result.ir.type === "bridge") {
     await buildBridgeFlow(result.ir, state.pos, state.yaw);
-  } else {
+  } else if (result.ir.type === "box") {
     await buildBoxFlow(result.ir, state.pos);
+  } else {
+    // grid は LLM 経路（プロンプト）に無いので、ここには来ない想定。
+    // 万一来ても防御的に拒否する（grid は !grid 開発コマンド経由のみ・R1）。
+    await server.say("§cその形式には対応していません。");
   }
 }
 
@@ -152,6 +159,62 @@ async function buildBridgeFlow(ir: BridgeIR, player: { x: number; y: number; z: 
   await server.say(`§a橋を架けました（長さ${ir.span} / 幅${ir.width} / 正面:${facing}）。取り消すには「もどして」。`);
 }
 
+/**
+ * grid 注入経路（開発/テスト用・§v2.x §7.2）。★LLM を通さない★。
+ * `fixtures/grid/<name>.json` を読んで GridIR として build に渡す。
+ * AI に grid を埋めさせないため、通常の発言→Claude 経路とは完全に分離する（R1）。
+ */
+async function handleGrid(name: string): Promise<void> {
+  if (!/^[a-z0-9_-]+$/.test(name)) {
+    await server.say("§e使い方：!grid <name>（例 !grid stairs）。name は英数字・_・- のみ。");
+    return;
+  }
+
+  let raw: unknown;
+  try {
+    const text = readFileSync(join(process.cwd(), "fixtures", "grid", `${name}.json`), "utf8");
+    raw = JSON.parse(text);
+  } catch (e) {
+    log.warn("grid フィクスチャ読込失敗", { name, error: String(e) });
+    await server.say(`§cフィクスチャ「${name}」を読み込めませんでした。`);
+    return;
+  }
+
+  const parsed = parseIR(raw);
+  if (!parsed.ok) {
+    await server.say(`§cgrid の検証に失敗: ${parsed.error}`);
+    return;
+  }
+  if (parsed.ir.type !== "grid") {
+    await server.say("§cこのフィクスチャは grid 型ではありません。");
+    return;
+  }
+  if (parsed.warnings.length > 0) log.warn("grid 警告", parsed.warnings);
+
+  const state = await server.queryPlayerState();
+  if (!state) {
+    await server.say("§c座標が取得できませんでした。");
+    return;
+  }
+
+  const ir = parsed.ir;
+  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
+  const { origin, facing } = planPlacement(state.pos, state.yaw, ir.size.w, ir.size.d, explicit);
+  ir.facing = facing;
+  log.info("grid 配置/facing 解決", { name, facing, origin });
+
+  const built = build(ir, origin);
+  log.info("送信コマンド数", built.commands.length);
+  for (const cmd of built.commands) {
+    const body = await server.runCommand(cmd);
+    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
+  }
+  undo.record(built);
+
+  const { w, h, d } = ir.size;
+  await server.say(`§agrid「${name}」を設置しました（${w}x${h}x${d} / 正面:${facing}）。取り消すには「もどして」。`);
+}
+
 async function handleUndo(): Promise<void> {
   const cmds = undo.buildUndoCommands();
   if (!cmds) {
@@ -171,6 +234,13 @@ function onMessage(body: PlayerMessageBody): void {
 
   const text = body.message ?? "";
   log.info("PlayerMessage", { sender: body.sender, message: text });
+
+  // grid 注入（開発コマンド）。LLM を通さず fixtures から直接（§v2.x §7.2 / R1）。
+  if (text.startsWith("!grid")) {
+    const name = text.slice("!grid".length).trim();
+    handleGrid(name).catch((e) => log.error("grid 処理で例外", String(e)));
+    return;
+  }
 
   // 失敗してもプロセスを落とさない（§8）。各ハンドラ内で例外は握りつぶしてチャット通知。
   if (includesAny(text, config.undoWords)) {
