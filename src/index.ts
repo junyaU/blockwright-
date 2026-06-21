@@ -11,7 +11,7 @@ import { planPlacement } from "./geometry.js";
 import { UndoManager } from "./undo.js";
 import { config } from "./config.js";
 import { log } from "./log.js";
-import type { BoxIR, HouseIR } from "./ir.js";
+import type { BoxIR, HouseIR, TowerIR, WallIR, BridgeIR } from "./ir.js";
 
 const server = new MinecraftServer();
 const undo = new UndoManager();
@@ -37,6 +37,12 @@ async function handleBuild(utterance: string): Promise<void> {
 
   if (result.ir.type === "house") {
     await buildHouseFlow(result.ir, state.pos, state.yaw);
+  } else if (result.ir.type === "tower") {
+    await buildTowerFlow(result.ir, state.pos, state.yaw);
+  } else if (result.ir.type === "wall") {
+    await buildWallFlow(result.ir, state.pos, state.yaw);
+  } else if (result.ir.type === "bridge") {
+    await buildBridgeFlow(result.ir, state.pos, state.yaw);
   } else {
     await buildBoxFlow(result.ir, state.pos);
   }
@@ -88,6 +94,62 @@ async function buildHouseFlow(ir: HouseIR, player: { x: number; y: number; z: nu
 
   const { w, d } = ir.footprint;
   await server.say(`§a家を建てました（${w}x${d} / ${ir.roof}屋根 / 正面:${facing}）。取り消すには「もどして」。`);
+}
+
+/** tower：house と同様に前方配置・ドアがプレイヤー側を向く向きで決定論生成して送る。 */
+async function buildTowerFlow(ir: TowerIR, player: { x: number; y: number; z: number }, yaw: number): Promise<void> {
+  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
+  const { origin, facing } = planPlacement(player, yaw, ir.footprint.w, ir.footprint.d, explicit);
+  ir.facing = facing;
+  log.info("配置/facing 解決", { yaw, facing, origin });
+
+  const built = build(ir, origin);
+  log.info("送信コマンド数", built.commands.length);
+  for (const cmd of built.commands) {
+    const body = await server.runCommand(cmd);
+    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
+  }
+  undo.record(built);
+
+  const { w, d } = ir.footprint;
+  await server.say(`§a塔を建てました（${w}x${d} / 高さ${ir.height} / ${ir.cap ?? "battlement"} / 正面:${facing}）。取り消すには「もどして」。`);
+}
+
+/** wall：プレイヤー前方に配置し、正面(lz=0)がプレイヤー側を向く向きで生成して送る。 */
+async function buildWallFlow(ir: WallIR, player: { x: number; y: number; z: number }, yaw: number): Promise<void> {
+  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
+  const thickness = ir.thickness ?? 1;
+  const { origin, facing } = planPlacement(player, yaw, ir.length, thickness, explicit);
+  ir.facing = facing;
+  log.info("配置/facing 解決", { yaw, facing, origin });
+
+  const built = build(ir, origin);
+  log.info("送信コマンド数", built.commands.length);
+  for (const cmd of built.commands) {
+    const body = await server.runCommand(cmd);
+    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
+  }
+  undo.record(built);
+
+  await server.say(`§a防壁を建てました（長さ${ir.length} / 高さ${ir.height} / 正面:${facing}）。取り消すには「もどして」。`);
+}
+
+/** bridge：プレイヤー前方に配置し、正面(lz=0)がプレイヤー側を向く向きで生成して送る。 */
+async function buildBridgeFlow(ir: BridgeIR, player: { x: number; y: number; z: number }, yaw: number): Promise<void> {
+  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
+  const { origin, facing } = planPlacement(player, yaw, ir.span, ir.width, explicit);
+  ir.facing = facing;
+  log.info("配置/facing 解決", { yaw, facing, origin });
+
+  const built = build(ir, origin);
+  log.info("送信コマンド数", built.commands.length);
+  for (const cmd of built.commands) {
+    const body = await server.runCommand(cmd);
+    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
+  }
+  undo.record(built);
+
+  await server.say(`§a橋を架けました（長さ${ir.span} / 幅${ir.width} / 正面:${facing}）。取り消すには「もどして」。`);
 }
 
 async function handleUndo(): Promise<void> {

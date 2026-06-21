@@ -14,8 +14,8 @@ export interface Vec3 {
   z: number;
 }
 
-/** v1: box（v0 不変）に house を追加した判別ユニオン。将来 grid/tower 等を追加可。 */
-export type IR = BoxIR | HouseIR;
+/** v2: box（v0）・house（v1）に tower/wall/bridge を追加した判別ユニオン。将来 grid 等を追加可。 */
+export type IR = BoxIR | HouseIR | TowerIR | WallIR | BridgeIR;
 
 export interface BoxIR {
   /** discriminator（将来の分岐キー）。 */
@@ -70,6 +70,94 @@ export interface HouseIR {
   facing?: Facing | "auto";
 }
 
+/** 塔の上部処理（§v2）。"flat"=平天井で蓋、"battlement"=胸壁（交互の merlon）。 */
+export type TowerCap = "flat" | "battlement";
+/** 塔の断面。v2 は "square" のみ実装。"round" は将来（指定時は square に縮退）。 */
+export type TowerShape = "square" | "round";
+
+/**
+ * 塔（§v2）。house と同じく AI はパラメータのみ埋め、幾何は buildTower が決定論生成する。
+ * house の躯体プリミティブ（床/四方壁/隅柱/ドア開口）を縦方向に再利用する。
+ */
+export interface TowerIR {
+  type: "tower";
+  /** 外形（ブロック数）。各 3..16。基本は正方形だが w≠d も許容。 */
+  footprint: { w: number; d: number };
+  /** 塔身の高さ（床上〜cap 手前）。5..48。 */
+  height: number;
+  /** 上部処理。既定 "battlement"。 */
+  cap?: TowerCap;
+  /** 断面形状。既定 "square"。"round" は v2 では square に縮退（警告）。 */
+  shape?: TowerShape;
+  /** 先細り（将来）。v2 では無視（0 として扱い、非 0 は警告して捨てる）。 */
+  taper?: number;
+  door?: {
+    /** 正面壁(lz=0)沿いの開口横位置。既定 "center"。数値は 1..w-2 にクランプ。 */
+    position?: "center" | number;
+  };
+  windows?: {
+    /** "none" | "slit"（縦スリット＝狭間）。既定 "slit"。 */
+    pattern?: "none" | "slit";
+    /** 各面のスリット本数。省略時は footprint から自動。 */
+    count?: number;
+    /** スリット下端の高さ（床から）。既定 2。 */
+    sill?: number;
+    /** スリットの縦の高さ（ブロック数）。既定 3。 */
+    span?: number;
+  };
+  /** palette 直指定 or style 名。両方あれば palette 優先（house と同じ §5.3）。 */
+  palette?: Palette;
+  style?: string;
+  /** 既定 "auto"（プレイヤー yaw 由来）。build 前に index 側で具体方位へ解決する。 */
+  facing?: Facing | "auto";
+}
+
+/**
+ * 防壁（§v2）。長い直線状の壁。AI はパラメータのみ埋め、幾何は buildWall が決定論生成する。
+ * ローカル空間：length=長辺(lx)、thickness=厚み(lz)、height=ly。正面=lz=0。
+ */
+export interface WallIR {
+  type: "wall";
+  /** 壁の長さ（ブロック数）。5..64。 */
+  length: number;
+  /** 壁の高さ（床上）。3..16。 */
+  height: number;
+  /** 壁の厚み。1..4、既定 1。 */
+  thickness?: number;
+  /** 上部に胸壁（交互の merlon）を付けるか。既定 true。 */
+  crenellation?: boolean;
+  gate?: {
+    /** 通用門の横位置。既定 "center"。数値は端を避けてクランプ。 */
+    position?: "center" | number;
+    /** 門の幅。1..8、既定 1。 */
+    width?: number;
+    /** 門の高さ。2..height、既定 min(3, height)。 */
+    height?: number;
+  };
+  palette?: Palette;
+  style?: string;
+  facing?: Facing | "auto";
+}
+
+/**
+ * 橋（§v2）。桁（deck）＋欄干＋（任意）橋脚。地面より上に渡す。
+ * ローカル空間：span=長辺(lx)、width=幅(lz)、deck=ly=0。正面=lz=0。橋脚は ly<0 へ降ろす。
+ */
+export interface BridgeIR {
+  type: "bridge";
+  /** 橋の長さ（スパン）。5..64。 */
+  span: number;
+  /** 橋の幅。2..16。 */
+  width: number;
+  /** 両側の欄干を付けるか。既定 true。 */
+  railing?: boolean;
+  /** 橋脚（下方向の支柱）を付けるか。既定 true。 */
+  piers?: boolean;
+  palette?: Palette;
+  style?: string;
+  facing?: Facing | "auto";
+}
+
 /** build() の返り値。 */
 export interface BuildResult {
   /** 設置領域の絶対座標（Undo 用）。 */
@@ -89,6 +177,28 @@ export const HEIGHT_MIN = 3;
 export const HEIGHT_MAX = 12;
 export const OVERHANG_MIN = 0;
 export const OVERHANG_MAX = 2;
+
+/** tower パラメータの許容範囲（§v2）。house より縦長を許す。 */
+export const TOWER_FOOTPRINT_MIN = 3;
+export const TOWER_FOOTPRINT_MAX = 16;
+export const TOWER_HEIGHT_MIN = 5;
+export const TOWER_HEIGHT_MAX = 48;
+
+/** wall パラメータの許容範囲（§v2）。 */
+export const WALL_LENGTH_MIN = 5;
+export const WALL_LENGTH_MAX = 64;
+export const WALL_HEIGHT_MIN = 3;
+export const WALL_HEIGHT_MAX = 16;
+export const WALL_THICKNESS_MIN = 1;
+export const WALL_THICKNESS_MAX = 4;
+
+/** bridge パラメータの許容範囲（§v2）。 */
+export const BRIDGE_SPAN_MIN = 5;
+export const BRIDGE_SPAN_MAX = 64;
+export const BRIDGE_WIDTH_MIN = 2;
+export const BRIDGE_WIDTH_MAX = 16;
+/** 橋脚の固定の深さ（ブロック数、下方向）。 */
+export const BRIDGE_PIER_DEPTH = 4;
 
 /** 数値を整数化し min..max にクランプ。範囲外なら warnings に記録。非数値は null。 */
 function clampInt(
@@ -138,8 +248,14 @@ export function parseIR(raw: unknown): ParseResult {
       return parseBoxIR(obj);
     case "house":
       return parseHouseIR(obj);
+    case "tower":
+      return parseTowerIR(obj);
+    case "wall":
+      return parseWallIR(obj);
+    case "bridge":
+      return parseBridgeIR(obj);
     default:
-      return { ok: false, error: `未対応の IR type: ${JSON.stringify(obj.type)}（box / house）。` };
+      return { ok: false, error: `未対応の IR type: ${JSON.stringify(obj.type)}（box / house / tower / wall / bridge）。` };
   }
 }
 
@@ -305,6 +421,263 @@ function parseHouseIR(obj: Record<string, unknown>): ParseResult {
     ...(roofOverhang !== undefined ? { roofOverhang } : {}),
     ...(door !== undefined ? { door } : {}),
     ...(windows !== undefined ? { windows } : {}),
+    ...(palette !== null ? { palette } : {}),
+    ...(style !== undefined ? { style } : {}),
+    facing,
+  };
+  return { ok: true, ir, warnings };
+}
+
+function parseTowerIR(obj: Record<string, unknown>): ParseResult {
+  const warnings: string[] = [];
+
+  const fp = obj.footprint;
+  if (typeof fp !== "object" || fp === null) {
+    return { ok: false, error: "footprint がありません。" };
+  }
+  const f = fp as Record<string, unknown>;
+  const w = clampInt(f.w, TOWER_FOOTPRINT_MIN, TOWER_FOOTPRINT_MAX, "footprint.w", warnings);
+  const d = clampInt(f.d, TOWER_FOOTPRINT_MIN, TOWER_FOOTPRINT_MAX, "footprint.d", warnings);
+  if (w === null || d === null) {
+    return { ok: false, error: "footprint.w/d は数値である必要があります。" };
+  }
+
+  const height = clampInt(obj.height, TOWER_HEIGHT_MIN, TOWER_HEIGHT_MAX, "height", warnings);
+  if (height === null) {
+    return { ok: false, error: "height は数値である必要があります。" };
+  }
+
+  let cap: TowerCap;
+  if (obj.cap === "flat" || obj.cap === "battlement") {
+    cap = obj.cap;
+  } else {
+    cap = "battlement";
+    if (obj.cap !== undefined) warnings.push(`cap=${JSON.stringify(obj.cap)} は無効。"battlement" を使用。`);
+  }
+
+  // shape: round は v2 未対応のため square に縮退。
+  let shape: TowerShape = "square";
+  if (obj.shape === "square" || obj.shape === "round") {
+    if (obj.shape === "round") warnings.push('shape="round" は v2 未対応。square で建てます。');
+  } else if (obj.shape !== undefined) {
+    warnings.push(`shape=${JSON.stringify(obj.shape)} は無効。"square" を使用。`);
+  }
+
+  // taper: 将来パラメータ。v2 では無視（非 0 は警告して捨てる）。
+  if (obj.taper !== undefined && obj.taper !== 0) {
+    warnings.push("taper は v2 未対応。0 で建てます。");
+  }
+
+  // door（house と同形）
+  let door: TowerIR["door"];
+  if (obj.door !== undefined) {
+    if (typeof obj.door !== "object" || obj.door === null) {
+      warnings.push("door が不正なため既定（center）を使用。");
+    } else {
+      const pos = (obj.door as Record<string, unknown>).position;
+      if (pos === "center" || pos === undefined) {
+        door = { position: "center" };
+      } else {
+        const clamped = clampInt(pos, 1, Math.max(1, w - 2), "door.position", warnings);
+        door = { position: clamped ?? "center" };
+      }
+    }
+  }
+
+  // windows（縦スリット）
+  let windows: TowerIR["windows"];
+  if (obj.windows !== undefined) {
+    if (typeof obj.windows !== "object" || obj.windows === null) {
+      warnings.push("windows が不正なため既定（slit）を使用。");
+    } else {
+      const wo = obj.windows as Record<string, unknown>;
+      const pattern = wo.pattern === "none" || wo.pattern === "slit" ? wo.pattern : "slit";
+      const count =
+        wo.count === undefined
+          ? undefined
+          : (clampInt(wo.count, 0, TOWER_FOOTPRINT_MAX, "windows.count", warnings) ?? undefined);
+      const sill =
+        wo.sill === undefined
+          ? undefined
+          : (clampInt(wo.sill, 0, Math.max(0, height - 1), "windows.sill", warnings) ?? undefined);
+      const span =
+        wo.span === undefined
+          ? undefined
+          : (clampInt(wo.span, 1, Math.max(1, height), "windows.span", warnings) ?? undefined);
+      windows = {
+        pattern,
+        ...(count !== undefined ? { count } : {}),
+        ...(sill !== undefined ? { sill } : {}),
+        ...(span !== undefined ? { span } : {}),
+      };
+    }
+  }
+
+  const palette = parsePalette(obj.palette, warnings);
+  if (palette === "invalid") {
+    return { ok: false, error: "palette はオブジェクトである必要があります。" };
+  }
+
+  let style: string | undefined;
+  if (obj.style !== undefined) {
+    if (typeof obj.style !== "string") {
+      warnings.push("style が文字列でないため無視しました。");
+    } else if (obj.style.trim() !== "") {
+      style = obj.style.trim();
+    }
+  }
+
+  let facing: TowerIR["facing"] = "auto";
+  if (obj.facing !== undefined) {
+    if (["north", "south", "east", "west", "auto"].includes(obj.facing as string)) {
+      facing = obj.facing as TowerIR["facing"];
+    } else {
+      warnings.push(`facing=${JSON.stringify(obj.facing)} は無効。"auto" を使用。`);
+    }
+  }
+
+  const ir: TowerIR = {
+    type: "tower",
+    footprint: { w, d },
+    height,
+    cap,
+    shape,
+    ...(door !== undefined ? { door } : {}),
+    ...(windows !== undefined ? { windows } : {}),
+    ...(palette !== null ? { palette } : {}),
+    ...(style !== undefined ? { style } : {}),
+    facing,
+  };
+  return { ok: true, ir, warnings };
+}
+
+/** style 文字列を検証（非空文字列のみ採用）。共通ヘルパ。 */
+function parseStyle(value: unknown, warnings: string[]): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    warnings.push("style が文字列でないため無視しました。");
+    return undefined;
+  }
+  return value.trim() !== "" ? value.trim() : undefined;
+}
+
+/** facing を enum 検証（既定 "auto"）。共通ヘルパ。 */
+function parseFacing(value: unknown, warnings: string[]): Facing | "auto" {
+  if (value === undefined) return "auto";
+  if (["north", "south", "east", "west", "auto"].includes(value as string)) {
+    return value as Facing | "auto";
+  }
+  warnings.push(`facing=${JSON.stringify(value)} は無効。"auto" を使用。`);
+  return "auto";
+}
+
+function parseWallIR(obj: Record<string, unknown>): ParseResult {
+  const warnings: string[] = [];
+
+  const length = clampInt(obj.length, WALL_LENGTH_MIN, WALL_LENGTH_MAX, "length", warnings);
+  if (length === null) {
+    return { ok: false, error: "length は数値である必要があります。" };
+  }
+  const height = clampInt(obj.height, WALL_HEIGHT_MIN, WALL_HEIGHT_MAX, "height", warnings);
+  if (height === null) {
+    return { ok: false, error: "height は数値である必要があります。" };
+  }
+  const thickness =
+    obj.thickness === undefined
+      ? undefined
+      : (clampInt(obj.thickness, WALL_THICKNESS_MIN, WALL_THICKNESS_MAX, "thickness", warnings) ?? undefined);
+
+  let crenellation = true;
+  if (obj.crenellation !== undefined) {
+    if (typeof obj.crenellation === "boolean") crenellation = obj.crenellation;
+    else warnings.push("crenellation は真偽値である必要があります。既定 true を使用。");
+  }
+
+  // gate（通用門）
+  let gate: WallIR["gate"];
+  if (obj.gate !== undefined) {
+    if (typeof obj.gate !== "object" || obj.gate === null) {
+      warnings.push("gate が不正なため無視しました。");
+    } else {
+      const g = obj.gate as Record<string, unknown>;
+      let position: "center" | number = "center";
+      if (g.position !== undefined && g.position !== "center") {
+        const clamped = clampInt(g.position, 1, Math.max(1, length - 2), "gate.position", warnings);
+        if (clamped !== null) position = clamped;
+      }
+      const gw =
+        g.width === undefined
+          ? undefined
+          : (clampInt(g.width, 1, Math.min(8, Math.max(1, length - 2)), "gate.width", warnings) ?? undefined);
+      const gh =
+        g.height === undefined
+          ? undefined
+          : (clampInt(g.height, 2, height, "gate.height", warnings) ?? undefined);
+      gate = {
+        position,
+        ...(gw !== undefined ? { width: gw } : {}),
+        ...(gh !== undefined ? { height: gh } : {}),
+      };
+    }
+  }
+
+  const palette = parsePalette(obj.palette, warnings);
+  if (palette === "invalid") {
+    return { ok: false, error: "palette はオブジェクトである必要があります。" };
+  }
+  const style = parseStyle(obj.style, warnings);
+  const facing = parseFacing(obj.facing, warnings);
+
+  const ir: WallIR = {
+    type: "wall",
+    length,
+    height,
+    ...(thickness !== undefined ? { thickness } : {}),
+    crenellation,
+    ...(gate !== undefined ? { gate } : {}),
+    ...(palette !== null ? { palette } : {}),
+    ...(style !== undefined ? { style } : {}),
+    facing,
+  };
+  return { ok: true, ir, warnings };
+}
+
+function parseBridgeIR(obj: Record<string, unknown>): ParseResult {
+  const warnings: string[] = [];
+
+  const span = clampInt(obj.span, BRIDGE_SPAN_MIN, BRIDGE_SPAN_MAX, "span", warnings);
+  if (span === null) {
+    return { ok: false, error: "span は数値である必要があります。" };
+  }
+  const width = clampInt(obj.width, BRIDGE_WIDTH_MIN, BRIDGE_WIDTH_MAX, "width", warnings);
+  if (width === null) {
+    return { ok: false, error: "width は数値である必要があります。" };
+  }
+
+  let railing = true;
+  if (obj.railing !== undefined) {
+    if (typeof obj.railing === "boolean") railing = obj.railing;
+    else warnings.push("railing は真偽値である必要があります。既定 true を使用。");
+  }
+  let piers = true;
+  if (obj.piers !== undefined) {
+    if (typeof obj.piers === "boolean") piers = obj.piers;
+    else warnings.push("piers は真偽値である必要があります。既定 true を使用。");
+  }
+
+  const palette = parsePalette(obj.palette, warnings);
+  if (palette === "invalid") {
+    return { ok: false, error: "palette はオブジェクトである必要があります。" };
+  }
+  const style = parseStyle(obj.style, warnings);
+  const facing = parseFacing(obj.facing, warnings);
+
+  const ir: BridgeIR = {
+    type: "bridge",
+    span,
+    width,
+    railing,
+    piers,
     ...(palette !== null ? { palette } : {}),
     ...(style !== undefined ? { style } : {}),
     facing,

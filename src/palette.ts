@@ -9,7 +9,7 @@
  *
  * presets は curated（実在 BE ブロック・R8）なので実質フォールバックは起きない。
  */
-import type { HouseIR, Palette } from "./ir.js";
+import type { Palette } from "./ir.js";
 import { resolveMaterial } from "./materials.js";
 
 export const DEFAULT_STYLE = "rustic";
@@ -48,24 +48,30 @@ export interface ResolvedPalette {
   warnings: string[];
 }
 
-export function resolvePalette(ir: HouseIR): ResolvedPalette {
+/** palette/style を持つ IR（house/tower 等）の共通部分。型に縛られず構造で受ける。 */
+export interface PaletteSource {
+  palette?: Palette;
+  style?: string;
+}
+
+export function resolvePalette(src: PaletteSource): ResolvedPalette {
   const warnings: string[] = [];
   const def = PRESETS[DEFAULT_STYLE]!;
 
   // 明示 style（既知のもののみ）。未知 style は警告。
   let stylePreset: Palette | undefined;
-  if (ir.style !== undefined) {
-    if (PRESETS[ir.style]) {
-      stylePreset = PRESETS[ir.style];
+  if (src.style !== undefined) {
+    if (PRESETS[src.style]) {
+      stylePreset = PRESETS[src.style];
     } else {
-      warnings.push(`style "${ir.style}" は未知。${ir.palette ? "palette/既定" : `既定 "${DEFAULT_STYLE}"`} を使用。`);
+      warnings.push(`style "${src.style}" は未知。${src.palette ? "palette/既定" : `既定 "${DEFAULT_STYLE}"`} を使用。`);
     }
   }
 
   let raw: Palette;
-  if (ir.palette) {
+  if (src.palette) {
     // palette 優先・欠けは style→既定で補完。trim 未指定→wall、window 未指定→glass。
-    const p = ir.palette;
+    const p = src.palette;
     const wall = nonEmpty(p.wall) ?? stylePreset?.wall ?? def.wall;
     const floor = nonEmpty(p.floor) ?? stylePreset?.floor ?? def.floor;
     const roof = nonEmpty(p.roof) ?? stylePreset?.roof ?? def.roof;

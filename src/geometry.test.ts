@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toWorld, transformHouse, lookFromYaw, planPlacement, type LocalOp } from "./geometry.js";
+import { toWorld, transformBuilding, lookFromYaw, planPlacement, type LocalOp } from "./geometry.js";
 import type { Vec3 } from "./ir.js";
 
 const ORIGIN: Vec3 = { x: 0, y: 0, z: 0 };
@@ -20,10 +20,10 @@ describe("toWorld (FR-23)", () => {
   });
 });
 
-describe("transformHouse: fill の min/max 再計算 (R2)", () => {
+describe("transformBuilding: fill の min/max 再計算 (R2)", () => {
   it("90°回転で角が入れ替わっても fill は min<=max に正規化される", () => {
     const ops: LocalOp[] = [{ kind: "fill", min: { x: 0, y: 0, z: 0 }, max: { x: 2, y: 0, z: 3 }, material: "minecraft:stone" }];
-    const { commands } = transformHouse(ops, "south", ORIGIN, 3, 4);
+    const { commands } = transformBuilding(ops, "south", ORIGIN, 3, 4);
     expect(commands).toHaveLength(1);
     // south: (0,0)->(2,3)、(2,3)->(0,0)。min/max 再計算で正規化。
     expect(commands[0]).toBe("fill 0 0 0 2 0 3 minecraft:stone");
@@ -31,7 +31,7 @@ describe("transformHouse: fill の min/max 再計算 (R2)", () => {
 
   it("point は setblock になり region に反映される", () => {
     const ops: LocalOp[] = [{ kind: "point", pos: { x: 1, y: 5, z: 1 }, material: "minecraft:glass" }];
-    const { commands, region } = transformHouse(ops, "north", ORIGIN, 5, 5);
+    const { commands, region } = transformBuilding(ops, "north", ORIGIN, 5, 5);
     expect(commands[0]).toBe("setblock 1 5 1 minecraft:glass");
     expect(region.min).toEqual({ x: 1, y: 5, z: 1 });
   });

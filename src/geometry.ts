@@ -105,8 +105,9 @@ export interface TransformResult {
 /**
  * ローカル op 列を facing でワールド化し、コマンド列と全体 AABB（Undo 用）を返す。
  * fill は両角変換→min/max 再計算→体積分割。point は setblock。
+ * 建物タイプ非依存（house/tower 等が共用する）。
  */
-export function transformHouse(
+export function transformBuilding(
   ops: LocalOp[],
   facing: Facing,
   origin: Vec3,

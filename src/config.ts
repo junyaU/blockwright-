@@ -33,7 +33,7 @@ export const config: Config = {
   apiKey: process.env.ANTHROPIC_API_KEY ?? "",
   model: process.env.MODEL?.trim() || "claude-sonnet-4-6",
   // 漢字・ひらがな両方を拾う（ユーザーは「たてて」とも書く）。
-  triggerWords: ["建てて", "たてて", "建てろ", "たてろ", "作って", "つくって", "build"],
+  triggerWords: ["建てて", "たてて", "建てろ", "たてろ", "作って", "つくって", "架けて", "かけて", "build"],
   undoWords: ["もどして", "戻して", "取り消して", "とりけして", "undo"],
   fallbackMaterial: "minecraft:stone",
 };

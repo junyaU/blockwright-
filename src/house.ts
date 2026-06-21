@@ -2,7 +2,7 @@
  * §6.3 C3: buildHouse(ir, origin) ★v1 中核★。
  *
  * 全形状を **ローカル空間**（lx∈[0,w-1], lz∈[0,d-1], ly∈[0,屋根頂]、正面壁=lz=0）で
- * `LocalOp[]` として積み、最後に geometry.transformHouse で facing 回転＋ワールド化する。
+ * `LocalOp[]` として積み、最後に geometry.transformBuilding で facing 回転＋ワールド化する。
  * 幾何ロジックを facing から独立させ、AI には座標を一切委ねない。
  *
  * 施工順（後工程が前工程を上書きして開口を作る）：
@@ -10,12 +10,14 @@
  */
 import type { HouseIR, Vec3, BuildResult, Facing, Palette } from "./ir.js";
 import { resolvePalette } from "./palette.js";
-import { transformHouse, type LocalOp } from "./geometry.js";
+import { transformBuilding, type LocalOp } from "./geometry.js";
 import { log } from "./log.js";
 
 const AIR = "minecraft:air";
 
-function fillOp(
+// --- 躯体プリミティブ（type 非依存。tower.ts 等が共用する） ---
+
+export function fillOp(
   x0: number, y0: number, z0: number,
   x1: number, y1: number, z1: number,
   material: string,
@@ -29,12 +31,12 @@ function fillOp(
 }
 
 /** ly=0 の床全面。 */
-function floor(ops: LocalOp[], w: number, d: number, material: string): void {
+export function floor(ops: LocalOp[], w: number, d: number, material: string): void {
   ops.push(fillOp(0, 0, 0, w - 1, 0, d - 1, material));
 }
 
 /** ly∈[1,h] の四方の壁（内部 air・天井なし）。 */
-function walls(ops: LocalOp[], w: number, d: number, h: number, material: string): void {
+export function walls(ops: LocalOp[], w: number, d: number, h: number, material: string): void {
   ops.push(fillOp(0, 1, 0, w - 1, h, 0, material)); // 北 lz=0（正面）
   ops.push(fillOp(0, 1, d - 1, w - 1, h, d - 1, material)); // 南 lz=d-1
   ops.push(fillOp(0, 1, 0, 0, h, d - 1, material)); // 西 lx=0
@@ -42,7 +44,7 @@ function walls(ops: LocalOp[], w: number, d: number, h: number, material: string
 }
 
 /** 4 隅の垂直柱（トリム）。trim==wall なら見た目変化なし。 */
-function corners(ops: LocalOp[], w: number, d: number, h: number, material: string): void {
+export function corners(ops: LocalOp[], w: number, d: number, h: number, material: string): void {
   ops.push(fillOp(0, 1, 0, 0, h, 0, material));
   ops.push(fillOp(w - 1, 1, 0, w - 1, h, 0, material));
   ops.push(fillOp(0, 1, d - 1, 0, h, d - 1, material));
@@ -50,18 +52,19 @@ function corners(ops: LocalOp[], w: number, d: number, h: number, material: stri
 }
 
 /** 正面壁 lz=0 の doorX 位置に幅1×高2の air 開口（実ドアは置かない＝§4.2）。 */
-function carveDoor(ops: LocalOp[], doorX: number): void {
+export function carveDoor(ops: LocalOp[], doorX: number): void {
   ops.push(fillOp(doorX, 1, 0, doorX, 2, 0, AIR));
 }
 
-function doorXOf(ir: HouseIR, w: number): number {
+/** ドアの横位置を解決（数値は 1..w-2 にクランプ、"center"/未指定は中央）。 */
+export function doorXOf(ir: { door?: { position?: "center" | number } }, w: number): number {
   const pos = ir.door?.position;
   if (typeof pos === "number") return Math.min(w - 2, Math.max(1, pos));
   return Math.floor((w - 1) / 2); // center
 }
 
 /** [lo,hi] に n 個の整数位置を等間隔配置（重複は除去）。 */
-function evenPositions(lo: number, hi: number, n: number): number[] {
+export function evenPositions(lo: number, hi: number, n: number): number[] {
   if (n <= 0 || hi < lo) return [];
   if (n === 1) return [Math.round((lo + hi) / 2)];
   const out: number[] = [];
@@ -161,5 +164,5 @@ export function buildHouse(ir: HouseIR, origin: Vec3): BuildResult {
   else gableRoof(ops, w, d, h, ov, pal.roof, pal.wall);
 
   log.info("house facing/寸法", { facing, w, d, h, roof: ir.roof, ov });
-  return transformHouse(ops, facing, origin, w, d);
+  return transformBuilding(ops, facing, origin, w, d);
 }
