@@ -14,7 +14,8 @@ import { planPlacement } from "./geometry.js";
 import { UndoManager } from "./undo.js";
 import { config } from "./config.js";
 import { log } from "./log.js";
-import type { BoxIR, HouseIR, TowerIR, WallIR, BridgeIR } from "./ir.js";
+import { voxelizeFile } from "./voxelize/index.js";
+import type { BoxIR, HouseIR, TowerIR, WallIR, BridgeIR, GridIR } from "./ir.js";
 
 const server = new MinecraftServer();
 const undo = new UndoManager();
@@ -191,17 +192,24 @@ async function handleGrid(name: string): Promise<void> {
   }
   if (parsed.warnings.length > 0) log.warn("grid 警告", parsed.warnings);
 
+  await placeAndBuildGrid(parsed.ir, name);
+}
+
+/**
+ * GridIR をプレイヤー前方に配置して建て、Undo 登録する共通処理（!grid / !voxelize で共用）。
+ * grid（v2.x）と voxelize（v3）はどちらも GridIR を出口とするため、下流の配線は同一。
+ */
+async function placeAndBuildGrid(ir: GridIR, label: string): Promise<void> {
   const state = await server.queryPlayerState();
   if (!state) {
     await server.say("§c座標が取得できませんでした。");
     return;
   }
 
-  const ir = parsed.ir;
   const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
   const { origin, facing } = planPlacement(state.pos, state.yaw, ir.size.w, ir.size.d, explicit);
   ir.facing = facing;
-  log.info("grid 配置/facing 解決", { name, facing, origin });
+  log.info("grid 配置/facing 解決", { label, facing, origin });
 
   const built = build(ir, origin);
   log.info("送信コマンド数", built.commands.length);
@@ -212,7 +220,49 @@ async function handleGrid(name: string): Promise<void> {
   undo.record(built);
 
   const { w, h, d } = ir.size;
-  await server.say(`§agrid「${name}」を設置しました（${w}x${h}x${d} / 正面:${facing}）。取り消すには「もどして」。`);
+  await server.say(`§a「${label}」を設置しました（${w}x${h}x${d} / 正面:${facing}）。取り消すには「もどして」。`);
+}
+
+/**
+ * v3 ボクセル化注入経路（開発用・§v3 §3）。★LLM を通さない★。
+ * `assets/<file>` の画像/3Dモデルを GridIR にボクセル化して build に渡す。
+ * 形（占有）は決定論コードが決め、AI は一切関与しない（R1）。
+ * 例：!voxelize creeper.png 16 / !voxelize kirby.glb 20 solid
+ */
+async function handleVoxelize(argline: string): Promise<void> {
+  const args = argline.trim().split(/\s+/).filter(Boolean);
+  const file = args[0];
+  if (!file || !/^[a-z0-9_.-]+$/i.test(file)) {
+    await server.say("§e使い方：!voxelize <file> <size> [thickness|fill]（例 !voxelize creeper.png 16）。");
+    return;
+  }
+  const size = args[1] !== undefined ? Number(args[1]) : undefined;
+  const third = args[2];
+  const thickness = third !== undefined && /^\d+$/.test(third) ? Number(third) : undefined;
+  const fill = third === "shell" || third === "solid" ? third : undefined;
+
+  let ir: GridIR;
+  try {
+    const gridIr = await voxelizeFile(join(process.cwd(), "assets", file), {
+      size: size !== undefined && Number.isFinite(size) ? size : undefined,
+      thickness,
+      fill,
+    });
+    // 安全網：ボクセル化出力も parseIR で再検証してから建てる。
+    const parsed = parseIR(gridIr);
+    if (!parsed.ok || parsed.ir.type !== "grid") {
+      await server.say(`§cボクセル化結果が不正です: ${parsed.ok ? "型不一致" : parsed.error}`);
+      return;
+    }
+    if (parsed.warnings.length > 0) log.warn("voxelize 警告", parsed.warnings);
+    ir = parsed.ir;
+  } catch (e) {
+    log.warn("ボクセル化失敗", { file, error: String(e) });
+    await server.say(`§c「${file}」のボクセル化に失敗しました。assets/ にファイルがありますか？`);
+    return;
+  }
+
+  await placeAndBuildGrid(ir, file);
 }
 
 async function handleUndo(): Promise<void> {
@@ -239,6 +289,13 @@ function onMessage(body: PlayerMessageBody): void {
   if (text.startsWith("!grid")) {
     const name = text.slice("!grid".length).trim();
     handleGrid(name).catch((e) => log.error("grid 処理で例外", String(e)));
+    return;
+  }
+
+  // v3 ボクセル化（開発コマンド）。LLM を通さず assets のリファレンスから直接（§v3 §3 / R1）。
+  if (text.startsWith("!voxelize")) {
+    const argline = text.slice("!voxelize".length);
+    handleVoxelize(argline).catch((e) => log.error("voxelize 処理で例外", String(e)));
     return;
   }
 
