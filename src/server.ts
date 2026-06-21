@@ -190,6 +190,15 @@ export class MinecraftServer {
    * 平地で足元 -60 のとき y=-58.38 ≈ -60 + 1.62）。eye 高さ分を引いて足元に直す。
    */
   async queryPlayerPosition(): Promise<Vec3 | null> {
+    const s = await this.queryPlayerState();
+    return s ? s.pos : null;
+  }
+
+  /**
+   * プレイヤーの足元絶対座標と yaw を得る。yaw は facing:"auto" 解決に使う（§6.2）。
+   * querytarget 応答の `arr[0].yRot` が yaw。位置は eye→足元補正済み。
+   */
+  async queryPlayerState(): Promise<{ pos: Vec3; yaw: number } | null> {
     const body = await this.runCommand("querytarget @s");
     if (!body || body.statusCode !== 0 || typeof body.details !== "string") {
       log.warn("座標取得に失敗", body);
@@ -197,13 +206,17 @@ export class MinecraftServer {
     }
     try {
       const arr = JSON.parse(body.details);
-      const pos = arr?.[0]?.position;
+      const target = arr?.[0];
+      const pos = target?.position;
       if (!pos) return null;
       const PLAYER_EYE_HEIGHT = 1.62;
       return {
-        x: Math.floor(pos.x),
-        y: Math.floor(pos.y - PLAYER_EYE_HEIGHT),
-        z: Math.floor(pos.z),
+        pos: {
+          x: Math.floor(pos.x),
+          y: Math.floor(pos.y - PLAYER_EYE_HEIGHT),
+          z: Math.floor(pos.z),
+        },
+        yaw: typeof target.yRot === "number" ? target.yRot : 0,
       };
     } catch (e) {
       log.warn("details のパースに失敗", String(e));

@@ -7,9 +7,11 @@
 import { MinecraftServer, type PlayerMessageBody } from "./server.js";
 import { generateIR } from "./claude.js";
 import { build } from "./build.js";
+import { planPlacement } from "./geometry.js";
 import { UndoManager } from "./undo.js";
 import { config } from "./config.js";
 import { log } from "./log.js";
+import type { BoxIR, HouseIR } from "./ir.js";
 
 const server = new MinecraftServer();
 const undo = new UndoManager();
@@ -19,8 +21,8 @@ function includesAny(text: string, words: string[]): boolean {
 }
 
 async function handleBuild(utterance: string): Promise<void> {
-  const origin = await server.queryPlayerPosition();
-  if (!origin) {
+  const state = await server.queryPlayerState();
+  if (!state) {
     await server.say("§c座標が取得できませんでした。");
     return;
   }
@@ -30,41 +32,62 @@ async function handleBuild(utterance: string): Promise<void> {
     await server.say(`§c建築に失敗しました: ${result.error}`);
     return;
   }
-  if (result.warnings.length > 0) {
-    log.warn("IR 警告", result.warnings);
-  }
-
+  if (result.warnings.length > 0) log.warn("IR 警告", result.warnings);
   log.info("生成 IR", result.ir);
-  const { w, d, h } = result.ir.size;
 
-  // まず AI の素材を信頼して建てる。最初の fill が失敗したら（＝無効ブロック等）
-  // フォールバック素材で建て直す（Minecraft を最終バリデータにする）。
-  let built = build(result.ir, origin);
+  if (result.ir.type === "house") {
+    await buildHouseFlow(result.ir, state.pos, state.yaw);
+  } else {
+    await buildBoxFlow(result.ir, state.pos);
+  }
+}
+
+/** box：AI 素材を信頼して建て、最初の fill が失敗したらフォールバックで建て直す（v0 方式）。 */
+async function buildBoxFlow(ir: BoxIR, origin: { x: number; y: number; z: number }): Promise<void> {
+  const { w, d, h } = ir.size;
+  let built = build(ir, origin);
   log.info("送信コマンド", built.commands);
   const first = built.commands[0];
   const firstBody = first ? await server.runCommand(first) : { statusCode: 0 };
 
   if (firstBody?.statusCode !== 0) {
-    log.warn("素材が無効の可能性。フォールバックで建て直します。", {
-      material: result.ir.material,
-      body: firstBody,
-    });
-    built = build({ ...result.ir, material: config.fallbackMaterial }, origin);
+    log.warn("素材が無効の可能性。フォールバックで建て直します。", { material: ir.material, body: firstBody });
+    built = build({ ...ir, material: config.fallbackMaterial }, origin);
     for (const cmd of built.commands) await server.runCommand(cmd);
     undo.record(built);
     await server.say(
-      `§e「${result.ir.material}」は使えなかったので ${config.fallbackMaterial} で建てました（${w}x${d}x${h}）。取り消すには「もどして」。`,
+      `§e「${ir.material}」は使えなかったので ${config.fallbackMaterial} で建てました（${w}x${d}x${h}）。取り消すには「もどして」。`,
     );
     return;
   }
 
-  // 1本目が成功したので残りを送る。
   for (const cmd of built.commands.slice(1)) {
     const body = await server.runCommand(cmd);
     if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
   }
   undo.record(built);
-  await server.say(`§a完成しました（${w}x${d}x${h} / ${result.ir.material}）。取り消すには「もどして」。`);
+  await server.say(`§a完成しました（${w}x${d}x${h} / ${ir.material}）。取り消すには「もどして」。`);
+}
+
+/** house：プレイヤー前方に配置し、ドアがプレイヤー側を向く向きで決定論生成して送る。 */
+async function buildHouseFlow(ir: HouseIR, player: { x: number; y: number; z: number }, yaw: number): Promise<void> {
+  // 配置（前方・中央寄せ）と facing（ドアがプレイヤー側）をまとめて決める。
+  // IR の座標非保持原則は維持：build へは具体 origin を渡し、facing は方位 enum。
+  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
+  const { origin, facing } = planPlacement(player, yaw, ir.footprint.w, ir.footprint.d, explicit);
+  ir.facing = facing;
+  log.info("配置/facing 解決", { yaw, facing, origin });
+
+  const built = build(ir, origin);
+  log.info("送信コマンド数", built.commands.length);
+  for (const cmd of built.commands) {
+    const body = await server.runCommand(cmd);
+    if (body?.statusCode !== 0) log.warn("コマンドが失敗を返しました", { cmd, body });
+  }
+  undo.record(built);
+
+  const { w, d } = ir.footprint;
+  await server.say(`§a家を建てました（${w}x${d} / ${ir.roof}屋根 / 正面:${facing}）。取り消すには「もどして」。`);
 }
 
 async function handleUndo(): Promise<void> {

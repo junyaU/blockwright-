@@ -10,6 +10,7 @@
  */
 import type { IR, BoxIR, Vec3, BuildResult } from "./ir.js";
 import { resolveMaterial } from "./materials.js";
+import { buildHouse } from "./house.js";
 import { log } from "./log.js";
 
 /**
@@ -26,7 +27,7 @@ const CHUNK = 32;
  */
 const PLACEMENT_OFFSET: Vec3 = { x: 2, y: 0, z: 2 };
 
-function coords(v: Vec3): string {
+export function coords(v: Vec3): string {
   return `${v.x} ${v.y} ${v.z}`;
 }
 
@@ -39,8 +40,11 @@ function splitAxis(a: number, b: number): Array<[number, number]> {
   return out;
 }
 
-/** min..max のソリッド領域を、上限を超えないよう分割した fill コマンド列にする。 */
-function solidFills(min: Vec3, max: Vec3, material: string): string[] {
+/**
+ * min..max のソリッド領域を、体積上限を超えないよう分割した fill コマンド列にする。
+ * box・house（geometry 経由）の双方で共用する分割器（FR-10/R7）。
+ */
+export function fillCommands(min: Vec3, max: Vec3, material: string): string[] {
   const volume = (max.x - min.x + 1) * (max.y - min.y + 1) * (max.z - min.z + 1);
   if (volume <= FILL_VOLUME_LIMIT) {
     return [`fill ${coords(min)} ${coords(max)} ${material}`];
@@ -70,7 +74,7 @@ function hollowFaces(min: Vec3, max: Vec3, material: string): string[] {
     [{ ...min, x: min.x }, { ...max, x: min.x }], // 西
     [{ ...min, x: max.x }, { ...max, x: max.x }], // 東
   ];
-  return faces.flatMap(([fMin, fMax]) => solidFills(fMin, fMax, material));
+  return faces.flatMap(([fMin, fMax]) => fillCommands(fMin, fMax, material));
 }
 
 function buildBox(ir: BoxIR, origin: Vec3): BuildResult {
@@ -100,7 +104,7 @@ function buildBox(ir: BoxIR, origin: Vec3): BuildResult {
         ? [`fill ${coords(min)} ${coords(max)} ${material} hollow`]
         : hollowFaces(min, max, material);
   } else {
-    commands = solidFills(min, max, material);
+    commands = fillCommands(min, max, material);
   }
 
   return { region: { min, max }, commands };
@@ -113,8 +117,9 @@ export function build(ir: IR, origin: Vec3): BuildResult {
   switch (ir.type) {
     case "box":
       return buildBox(ir, origin);
-    // case "grid": return buildGrid(ir, origin);   // 将来
-    // case "house": return buildHouse(ir, origin); // 将来
+    case "house":
+      return buildHouse(ir, origin);
+    // case "grid": return buildGrid(ir, origin); // 将来（v2.x エスケープハッチ）
     default:
       throw new Error(`unknown IR type: ${(ir as { type: string }).type}`);
   }
