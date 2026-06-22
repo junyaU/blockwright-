@@ -246,18 +246,6 @@ export type ParseResult =
   | { ok: true; ir: IR; warnings: string[] }
   | { ok: false; error: string };
 
-function clampSize(value: unknown, axis: string, warnings: string[]): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return null;
-  }
-  const rounded = Math.round(value);
-  const clamped = Math.min(SIZE_MAX, Math.max(SIZE_MIN, rounded));
-  if (clamped !== value) {
-    warnings.push(`size.${axis}=${value} を ${clamped} に補正しました（整数 ${SIZE_MIN}..${SIZE_MAX}）。`);
-  }
-  return clamped;
-}
-
 /**
  * 任意の値（Claude 出力を JSON.parse したもの等）を検証して IR にする。
  * 検証前の IR をそのまま施工に渡さないこと（§5.3）。type で box/house に振り分ける。
@@ -293,9 +281,9 @@ function parseBoxIR(obj: Record<string, unknown>): ParseResult {
   const s = size as Record<string, unknown>;
 
   const warnings: string[] = [];
-  const w = clampSize(s.w, "w", warnings);
-  const d = clampSize(s.d, "d", warnings);
-  const h = clampSize(s.h, "h", warnings);
+  const w = clampInt(s.w, SIZE_MIN, SIZE_MAX, "size.w", warnings);
+  const d = clampInt(s.d, SIZE_MIN, SIZE_MAX, "size.d", warnings);
+  const h = clampInt(s.h, SIZE_MIN, SIZE_MAX, "size.h", warnings);
   if (w === null || d === null || h === null) {
     return { ok: false, error: "size.w/d/h は数値である必要があります。" };
   }
@@ -380,21 +368,7 @@ function parseHouseIR(obj: Record<string, unknown>): ParseResult {
       ? undefined
       : (clampInt(obj.roofOverhang, OVERHANG_MIN, OVERHANG_MAX, "roofOverhang", warnings) ?? undefined);
 
-  // door
-  let door: HouseIR["door"];
-  if (obj.door !== undefined) {
-    if (typeof obj.door !== "object" || obj.door === null) {
-      warnings.push("door が不正なため既定（center）を使用。");
-    } else {
-      const pos = (obj.door as Record<string, unknown>).position;
-      if (pos === "center" || pos === undefined) {
-        door = { position: "center" };
-      } else {
-        const clamped = clampInt(pos, 1, Math.max(1, w - 2), "door.position", warnings);
-        door = { position: clamped ?? "center" };
-      }
-    }
-  }
+  const door = parseDoor(obj.door, w, warnings);
 
   // windows
   let windows: HouseIR["windows"];
@@ -420,24 +394,8 @@ function parseHouseIR(obj: Record<string, unknown>): ParseResult {
   if (palette === "invalid") {
     return { ok: false, error: "palette はオブジェクトである必要があります。" };
   }
-
-  let style: string | undefined;
-  if (obj.style !== undefined) {
-    if (typeof obj.style !== "string") {
-      warnings.push("style が文字列でないため無視しました。");
-    } else if (obj.style.trim() !== "") {
-      style = obj.style.trim();
-    }
-  }
-
-  let facing: HouseIR["facing"] = "auto";
-  if (obj.facing !== undefined) {
-    if (["north", "south", "east", "west", "auto"].includes(obj.facing as string)) {
-      facing = obj.facing as HouseIR["facing"];
-    } else {
-      warnings.push(`facing=${JSON.stringify(obj.facing)} は無効。"auto" を使用。`);
-    }
-  }
+  const style = parseStyle(obj.style, warnings);
+  const facing = parseFacing(obj.facing, warnings);
 
   const ir: HouseIR = {
     type: "house",
@@ -494,21 +452,7 @@ function parseTowerIR(obj: Record<string, unknown>): ParseResult {
     warnings.push("taper は v2 未対応。0 で建てます。");
   }
 
-  // door（house と同形）
-  let door: TowerIR["door"];
-  if (obj.door !== undefined) {
-    if (typeof obj.door !== "object" || obj.door === null) {
-      warnings.push("door が不正なため既定（center）を使用。");
-    } else {
-      const pos = (obj.door as Record<string, unknown>).position;
-      if (pos === "center" || pos === undefined) {
-        door = { position: "center" };
-      } else {
-        const clamped = clampInt(pos, 1, Math.max(1, w - 2), "door.position", warnings);
-        door = { position: clamped ?? "center" };
-      }
-    }
-  }
+  const door = parseDoor(obj.door, w, warnings);
 
   // windows（縦スリット）
   let windows: TowerIR["windows"];
@@ -543,24 +487,8 @@ function parseTowerIR(obj: Record<string, unknown>): ParseResult {
   if (palette === "invalid") {
     return { ok: false, error: "palette はオブジェクトである必要があります。" };
   }
-
-  let style: string | undefined;
-  if (obj.style !== undefined) {
-    if (typeof obj.style !== "string") {
-      warnings.push("style が文字列でないため無視しました。");
-    } else if (obj.style.trim() !== "") {
-      style = obj.style.trim();
-    }
-  }
-
-  let facing: TowerIR["facing"] = "auto";
-  if (obj.facing !== undefined) {
-    if (["north", "south", "east", "west", "auto"].includes(obj.facing as string)) {
-      facing = obj.facing as TowerIR["facing"];
-    } else {
-      warnings.push(`facing=${JSON.stringify(obj.facing)} は無効。"auto" を使用。`);
-    }
-  }
+  const style = parseStyle(obj.style, warnings);
+  const facing = parseFacing(obj.facing, warnings);
 
   const ir: TowerIR = {
     type: "tower",
@@ -575,6 +503,23 @@ function parseTowerIR(obj: Record<string, unknown>): ParseResult {
     facing,
   };
   return { ok: true, ir, warnings };
+}
+
+/** door {position} の検証（house/tower 共通）。数値は 1..w-2 にクランプ。 */
+function parseDoor(
+  value: unknown,
+  w: number,
+  warnings: string[],
+): { position: "center" | number } | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null) {
+    warnings.push("door が不正なため既定（center）を使用。");
+    return undefined;
+  }
+  const pos = (value as Record<string, unknown>).position;
+  if (pos === "center" || pos === undefined) return { position: "center" };
+  const clamped = clampInt(pos, 1, Math.max(1, w - 2), "door.position", warnings);
+  return { position: clamped ?? "center" };
 }
 
 /** style 文字列を検証（非空文字列のみ採用）。共通ヘルパ。 */

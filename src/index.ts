@@ -22,7 +22,7 @@ import { SessionState } from "./v5/session.js";
 import { Library } from "./v5/library.js";
 import { interpret } from "./v5/interpret.js";
 import { dispatch, type EditContext, type ObtainResult } from "./v5/dispatch.js";
-import type { BoxIR, HouseIR, TowerIR, WallIR, BridgeIR, GridIR } from "./ir.js";
+import type { BoxIR, HouseIR, TowerIR, WallIR, BridgeIR, GridIR, Facing, Vec3 } from "./ir.js";
 
 const server = new MinecraftServer();
 const undo = new UndoManager();
@@ -82,6 +82,36 @@ const editCtx: EditContext = {
   },
   obtain,
 };
+
+/** facing を持つ建物 IR（box は前方配置・回転をしないので除く）。 */
+type PlaceableIR = HouseIR | TowerIR | WallIR | BridgeIR | GridIR;
+
+/**
+ * プレイヤー前方へ配置して建て、Undo 登録し、結果をチャット通知する共通フロー。
+ * house/tower/wall/bridge/grid は「footprint 寸法」と「完了メッセージ」だけが異なるので
+ * その 2 点をパラメータ化して 1 本に畳む（IR seam・送信・Undo はノータッチ）。
+ * v5：現在対象の更新に origin/region が要るので build 結果を返す（呼び出し側は無視可）。
+ */
+async function buildAndPlace(
+  ir: PlaceableIR,
+  player: Vec3,
+  yaw: number,
+  dims: { w: number; d: number },
+  sayDone: (facing: Facing) => string,
+): Promise<{ origin: Vec3; facing: Facing; built: ReturnType<typeof build> }> {
+  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
+  const { origin, facing } = planPlacement(player, yaw, dims.w, dims.d, explicit);
+  ir.facing = facing;
+  log.info("配置/facing 解決", { yaw, facing, origin });
+
+  const built = build(ir, origin);
+  log.info("送信コマンド数", built.commands.length);
+  await server.runCommands(built.commands);
+  undo.record(built);
+
+  await server.say(sayDone(facing));
+  return { origin, facing, built };
+}
 
 async function handleBuild(utterance: string): Promise<void> {
   // v4：外部キーが設定済みなら、まず「キャラ取得 vs パラメトリック」を判定して振り分ける（①）。
@@ -157,68 +187,33 @@ async function buildBoxFlow(ir: BoxIR, origin: { x: number; y: number; z: number
 }
 
 /** house：プレイヤー前方に配置し、ドアがプレイヤー側を向く向きで決定論生成して送る。 */
-async function buildHouseFlow(ir: HouseIR, player: { x: number; y: number; z: number }, yaw: number): Promise<void> {
-  // 配置（前方・中央寄せ）と facing（ドアがプレイヤー側）をまとめて決める。
-  // IR の座標非保持原則は維持：build へは具体 origin を渡し、facing は方位 enum。
-  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
-  const { origin, facing } = planPlacement(player, yaw, ir.footprint.w, ir.footprint.d, explicit);
-  ir.facing = facing;
-  log.info("配置/facing 解決", { yaw, facing, origin });
-
-  const built = build(ir, origin);
-  log.info("送信コマンド数", built.commands.length);
-  await server.runCommands(built.commands);
-  undo.record(built);
-
+async function buildHouseFlow(ir: HouseIR, player: Vec3, yaw: number): Promise<void> {
   const { w, d } = ir.footprint;
-  await server.say(`§a家を建てました（${w}x${d} / ${ir.roof}屋根 / 正面:${facing}）。取り消すには「もどして」。`);
+  await buildAndPlace(ir, player, yaw, { w, d }, (facing) =>
+    `§a家を建てました（${w}x${d} / ${ir.roof}屋根 / 正面:${facing}）。取り消すには「もどして」。`,
+  );
 }
 
 /** tower：house と同様に前方配置・ドアがプレイヤー側を向く向きで決定論生成して送る。 */
-async function buildTowerFlow(ir: TowerIR, player: { x: number; y: number; z: number }, yaw: number): Promise<void> {
-  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
-  const { origin, facing } = planPlacement(player, yaw, ir.footprint.w, ir.footprint.d, explicit);
-  ir.facing = facing;
-  log.info("配置/facing 解決", { yaw, facing, origin });
-
-  const built = build(ir, origin);
-  log.info("送信コマンド数", built.commands.length);
-  await server.runCommands(built.commands);
-  undo.record(built);
-
+async function buildTowerFlow(ir: TowerIR, player: Vec3, yaw: number): Promise<void> {
   const { w, d } = ir.footprint;
-  await server.say(`§a塔を建てました（${w}x${d} / 高さ${ir.height} / ${ir.cap ?? "battlement"} / 正面:${facing}）。取り消すには「もどして」。`);
+  await buildAndPlace(ir, player, yaw, { w, d }, (facing) =>
+    `§a塔を建てました（${w}x${d} / 高さ${ir.height} / ${ir.cap ?? "battlement"} / 正面:${facing}）。取り消すには「もどして」。`,
+  );
 }
 
 /** wall：プレイヤー前方に配置し、正面(lz=0)がプレイヤー側を向く向きで生成して送る。 */
-async function buildWallFlow(ir: WallIR, player: { x: number; y: number; z: number }, yaw: number): Promise<void> {
-  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
-  const thickness = ir.thickness ?? 1;
-  const { origin, facing } = planPlacement(player, yaw, ir.length, thickness, explicit);
-  ir.facing = facing;
-  log.info("配置/facing 解決", { yaw, facing, origin });
-
-  const built = build(ir, origin);
-  log.info("送信コマンド数", built.commands.length);
-  await server.runCommands(built.commands);
-  undo.record(built);
-
-  await server.say(`§a防壁を建てました（長さ${ir.length} / 高さ${ir.height} / 正面:${facing}）。取り消すには「もどして」。`);
+async function buildWallFlow(ir: WallIR, player: Vec3, yaw: number): Promise<void> {
+  await buildAndPlace(ir, player, yaw, { w: ir.length, d: ir.thickness ?? 1 }, (facing) =>
+    `§a防壁を建てました（長さ${ir.length} / 高さ${ir.height} / 正面:${facing}）。取り消すには「もどして」。`,
+  );
 }
 
 /** bridge：プレイヤー前方に配置し、正面(lz=0)がプレイヤー側を向く向きで生成して送る。 */
-async function buildBridgeFlow(ir: BridgeIR, player: { x: number; y: number; z: number }, yaw: number): Promise<void> {
-  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
-  const { origin, facing } = planPlacement(player, yaw, ir.span, ir.width, explicit);
-  ir.facing = facing;
-  log.info("配置/facing 解決", { yaw, facing, origin });
-
-  const built = build(ir, origin);
-  log.info("送信コマンド数", built.commands.length);
-  await server.runCommands(built.commands);
-  undo.record(built);
-
-  await server.say(`§a橋を架けました（長さ${ir.span} / 幅${ir.width} / 正面:${facing}）。取り消すには「もどして」。`);
+async function buildBridgeFlow(ir: BridgeIR, player: Vec3, yaw: number): Promise<void> {
+  await buildAndPlace(ir, player, yaw, { w: ir.span, d: ir.width }, (facing) =>
+    `§a橋を架けました（長さ${ir.span} / 幅${ir.width} / 正面:${facing}）。取り消すには「もどして」。`,
+  );
 }
 
 /**
@@ -267,21 +262,13 @@ async function placeAndBuildGrid(ir: GridIR, label: string): Promise<void> {
     return;
   }
 
-  const explicit = ir.facing && ir.facing !== "auto" ? ir.facing : undefined;
-  const { origin, facing } = planPlacement(state.pos, state.yaw, ir.size.w, ir.size.d, explicit);
-  ir.facing = facing;
-  log.info("grid 配置/facing 解決", { label, facing, origin });
-
-  const built = build(ir, origin);
-  log.info("送信コマンド数", built.commands.length);
-  await server.runCommands(built.commands);
-  undo.record(built);
+  const { w, h, d } = ir.size;
+  const { origin, built } = await buildAndPlace(ir, state.pos, state.yaw, { w, d }, (facing) =>
+    `§a「${label}」を設置しました（${w}x${h}x${d} / 正面:${facing}）。取り消すには「もどして」。`,
+  );
 
   // v5：GridIR は修正の対象になりうるので現在対象として保持する（!grid / !voxelize / 生成 すべて）。
   session.setCurrent({ gridIR: ir, origin, region: built.region, name: slug(label), subject: label });
-
-  const { w, h, d } = ir.size;
-  await server.say(`§a「${label}」を設置しました（${w}x${h}x${d} / 正面:${facing}）。取り消すには「もどして」。`);
 }
 
 /**

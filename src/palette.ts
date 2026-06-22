@@ -11,6 +11,7 @@
  */
 import type { Palette } from "./ir.js";
 import { resolveMaterial } from "./materials.js";
+import { log } from "./log.js";
 
 export const DEFAULT_STYLE = "rustic";
 
@@ -104,4 +105,15 @@ export function resolvePalette(src: PaletteSource): ResolvedPalette {
     window: resolveSlot("window", raw.window!),
   };
   return { palette, warnings };
+}
+
+/**
+ * resolvePalette ＋ 警告/解決結果のログ出力をまとめた共通処理。
+ * house/tower/wall/bridge のビルダーが先頭で同じ 3 行を書いていた重複を畳む。
+ */
+export function resolvePaletteLogged(src: PaletteSource): Palette {
+  const { palette, warnings } = resolvePalette(src);
+  for (const w of warnings) log.warn("palette解決", w);
+  log.info("解決palette", palette);
+  return palette;
 }

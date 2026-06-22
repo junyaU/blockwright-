@@ -8,7 +8,7 @@
  */
 import type { GridIR, Vec3, BuildResult, Facing } from "./ir.js";
 import { resolveMaterial } from "./materials.js";
-import { transformBuilding, toWorld, type LocalOp } from "./geometry.js";
+import { transformBuilding, toWorld, resolveFacing, type LocalOp } from "./geometry.js";
 import { fillOp } from "./house.js";
 import { log } from "./log.js";
 
@@ -47,7 +47,7 @@ function fullGridRegion(w: number, h: number, d: number, facing: Facing, origin:
 }
 
 export function buildGrid(ir: GridIR, origin: Vec3): BuildResult {
-  const facing: Facing = ir.facing && ir.facing !== "auto" ? ir.facing : "north";
+  const facing = resolveFacing(ir.facing, "north");
   const { w, h, d } = ir.size;
   const { resolved, warnings } = resolveGridPalette(ir);
   for (const wmsg of warnings) log.warn("grid palette", wmsg);

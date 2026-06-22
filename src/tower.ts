@@ -9,9 +9,9 @@
  * 施工順（後工程が前工程を上書きして開口を作る）：
  *   床 → 四方の壁 → 隅柱(trim) → ドア開口(air) → 縦スリット → cap
  */
-import type { TowerIR, Vec3, BuildResult, Facing, Palette } from "./ir.js";
-import { resolvePalette } from "./palette.js";
-import { transformBuilding, type LocalOp } from "./geometry.js";
+import type { TowerIR, Vec3, BuildResult } from "./ir.js";
+import { resolvePaletteLogged } from "./palette.js";
+import { transformBuilding, resolveFacing, type LocalOp } from "./geometry.js";
 import { fillOp, floor, walls, corners, carveDoor, doorXOf, evenPositions } from "./house.js";
 import { log } from "./log.js";
 
@@ -97,15 +97,11 @@ function battlementCap(
 
 export function buildTower(ir: TowerIR, origin: Vec3): BuildResult {
   // tower は石造が自然なので style 未指定時は "stone" を既定にする（palette 指定があればそちら優先）。
-  const { palette, warnings } = resolvePalette({ palette: ir.palette, style: ir.style ?? "stone" });
-  for (const wmsg of warnings) log.warn("palette解決", wmsg);
-  log.info("解決palette", palette);
-
-  const facing: Facing = ir.facing && ir.facing !== "auto" ? ir.facing : "south";
+  const pal = resolvePaletteLogged({ palette: ir.palette, style: ir.style ?? "stone" });
+  const facing = resolveFacing(ir.facing, "south");
   const w = ir.footprint.w;
   const d = ir.footprint.d;
   const h = ir.height;
-  const pal: Palette = palette;
   const trim = pal.trim ?? pal.wall;
   const slitMat = pal.window ?? "minecraft:glass";
   const capMat = pal.roof;

@@ -33,6 +33,11 @@ const OPPOSITE: Record<Facing, Facing> = {
   west: "east",
 };
 
+/** ir.facing を具体方位へ解決する。"auto"/未指定は建物タイプ既定（fallback）に倒す。 */
+export function resolveFacing(facing: Facing | "auto" | undefined, fallback: Facing): Facing {
+  return facing && facing !== "auto" ? facing : fallback;
+}
+
 /** Bedrock yaw → プレイヤーが向いている 4 方位（規約は R6・実機確認）。 */
 export function lookFromYaw(yaw: number): Facing {
   const y = ((yaw % 360) + 360) % 360;
