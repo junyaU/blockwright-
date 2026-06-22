@@ -55,7 +55,7 @@ function sampleTriColor(t: ColoredTri, ba: number, bb: number): RGB {
 }
 
 export interface MeshOptions {
-  /** 目標の高さ（ブロック数）。既定 24。 */
+  /** 目標の高さ（ブロック数）。既定 48。高さをこれに合わせて等比スケールする。 */
   targetHeight?: number;
   /** 占有方式。既定 "solid"。 */
   fill?: MeshFill;
@@ -208,6 +208,9 @@ function fitToGrid(aabb: { min: Vec3f; max: Vec3f }, targetHeight: number): Grid
   const sy = Math.max(1e-6, aabb.max.y - aabb.min.y);
   const sx = Math.max(1e-6, aabb.max.x - aabb.min.x);
   const sz = Math.max(1e-6, aabb.max.z - aabb.min.z);
+  // 正規化は「高さ(sy)」基準：全キャラを targetHeight ブロックの高さに揃える（同じ背丈＝
+  // 体感サイズが揃う）。幅・奥行きは体型のまま（スリム/丸いは正しく反映）。
+  // 幅か奥行きが 64 を超える極端な体型のときだけ、下の guard ループで全体を縮める。
   let voxelSize = sy / Math.max(1, targetHeight);
 
   const dimsFor = (vs: number): Dims => ({
@@ -276,7 +279,11 @@ export function trisToGridIR(tris: ColoredTri[], opts: MeshOptions = {}): GridIR
   for (const cell of occupied) {
     const [x, y, z] = decodeCell(cell, dims);
     const rgb = colors.get(cell) ?? DEFAULT_COLOR;
-    voxels[y]![z]![x] = pb.intern(quantizeLab(rgb[0], rgb[1], rgb[2]));
+    // 向き正規化：生成メッシュ（Meshy 等）の正面はワールド +Z（最大 z）側に来るため、
+    // そのままだと正面が grid lz=d-1 になり、配置時にプレイヤーと反対を向く。
+    // Y 軸まわり 180°（x→w-1-x, z→d-1-z）で正面を lz=0 に揃える＝家のドア(lz=0)と同じ規約。
+    // 鏡像でなく剛体回転なので左右も保たれる（非対称キャラでも破綻しない）。
+    voxels[y]![dims.d - 1 - z]![dims.w - 1 - x] = pb.intern(quantizeLab(rgb[0], rgb[1], rgb[2]));
   }
 
   return { type: "grid", size: { w: dims.w, h: dims.h, d: dims.d }, voxels, palette: pb.toPalette(), facing: "auto" };

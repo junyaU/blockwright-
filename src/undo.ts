@@ -18,6 +18,27 @@ function splitAxis(a: number, b: number): Array<[number, number]> {
   return out;
 }
 
+/**
+ * 領域を air で埋め戻すコマンド列を返す（体積上限で分割）。
+ * Undo（直前領域の消去）と v5 の in-place 更新（旧対象の消去）で共用する純関数。
+ */
+export function airFillCommands(region: { min: Vec3; max: Vec3 }): string[] {
+  const { min, max } = region;
+  const volume = (max.x - min.x + 1) * (max.y - min.y + 1) * (max.z - min.z + 1);
+  if (volume <= FILL_VOLUME_LIMIT) {
+    return [`fill ${min.x} ${min.y} ${min.z} ${max.x} ${max.y} ${max.z} minecraft:air`];
+  }
+  const cmds: string[] = [];
+  for (const [x0, x1] of splitAxis(min.x, max.x)) {
+    for (const [y0, y1] of splitAxis(min.y, max.y)) {
+      for (const [z0, z1] of splitAxis(min.z, max.z)) {
+        cmds.push(`fill ${x0} ${y0} ${z0} ${x1} ${y1} ${z1} minecraft:air`);
+      }
+    }
+  }
+  return cmds;
+}
+
 export class UndoManager {
   private last: { min: Vec3; max: Vec3 } | null = null;
 
@@ -36,21 +57,8 @@ export class UndoManager {
    */
   buildUndoCommands(): string[] | null {
     if (!this.last) return null;
-    const { min, max } = this.last;
+    const region = this.last;
     this.last = null;
-
-    const volume = (max.x - min.x + 1) * (max.y - min.y + 1) * (max.z - min.z + 1);
-    if (volume <= FILL_VOLUME_LIMIT) {
-      return [`fill ${min.x} ${min.y} ${min.z} ${max.x} ${max.y} ${max.z} minecraft:air`];
-    }
-    const cmds: string[] = [];
-    for (const [x0, x1] of splitAxis(min.x, max.x)) {
-      for (const [y0, y1] of splitAxis(min.y, max.y)) {
-        for (const [z0, z1] of splitAxis(min.z, max.z)) {
-          cmds.push(`fill ${x0} ${y0} ${z0} ${x1} ${y1} ${z1} minecraft:air`);
-        }
-      }
-    }
-    return cmds;
+    return airFillCommands(region);
   }
 }
