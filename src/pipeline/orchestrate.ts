@@ -38,12 +38,14 @@ async function gridFromGlb(glb: string, targetHeight?: number): Promise<GridIR> 
 
 /** subject → GridIR（立体経路、破綻時は②の画像で平面フォールバック）。 */
 export async function resolveCharacterGrid(subject: string, targetHeight?: number): Promise<ResolveResult> {
+  // サイズ無指定なら設定の既定高さを使う（env DEFAULT_CHARACTER_HEIGHT で調整可）。
+  const height = targetHeight ?? config.characterHeight;
   // キャッシュ命中：同じ subject の生成3Dが既にあれば、画像検索/Meshy を介さず再利用（数秒）。
   // ④⑤⑥は決定論なので、glb さえあれば同じ立体が即建つ。破損していたら下の再生成に落ちる。
   const cached = glbPathFor(subject);
   if (existsSync(cached)) {
     try {
-      const ir = await gridFromGlb(cached, targetHeight);
+      const ir = await gridFromGlb(cached, height);
       log.info("キャッシュ命中：生成3Dを再利用（画像検索/Meshy をスキップ）", { glb: cached });
       return { ok: true, ir, mode: "3d" };
     } catch (e) {
@@ -57,12 +59,12 @@ export async function resolveCharacterGrid(subject: string, targetHeight?: numbe
   try {
     if (!config.meshyApiKey.trim()) throw new Error("MESHY_API_KEY 未設定");
     const glb = await generate3D(image.path, slug(subject)); // ③ ★原則破り★
-    const ir = await gridFromGlb(glb, targetHeight);
+    const ir = await gridFromGlb(glb, height);
     return { ok: true, ir, mode: "3d" };
   } catch (e) {
     log.warn("立体生成に失敗、平面フォールバックへ", String(e));
     try {
-      const flat = await imageToGridIR(image.path, { target: targetHeight ?? 48, thickness: 2 }); // v3.0 決定論
+      const flat = await imageToGridIR(image.path, { target: height, thickness: 2 }); // v3.0 決定論
       return { ok: true, ir: flat, mode: "flat" };
     } catch (e2) {
       return { ok: false, error: `平面フォールバックも失敗: ${String(e2)}` };

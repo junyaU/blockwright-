@@ -19,6 +19,9 @@ npm-debug.log*
 # v4 生成物（取得画像・生成3D）。個人ローカル限定でコミットしない（R3）。
 assets/generated/
 
+# v5 ライブラリ（保存した GridIR アセット＋index）。個人ローカル限定でコミットしない（§3 / R6）。
+library/
+
 # OS / エディタ
 .DS_Store
 Thumbs.db

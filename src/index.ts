@@ -17,14 +17,71 @@ import { log } from "./log.js";
 import { voxelizeFile } from "./voxelize/index.js";
 import { classifyIntent } from "./pipeline/intent.js";
 import { resolveCharacterGrid } from "./pipeline/orchestrate.js";
+import { slug } from "./pipeline/image.js";
+import { SessionState } from "./v5/session.js";
+import { Library } from "./v5/library.js";
+import { interpret } from "./v5/interpret.js";
+import { dispatch, type EditContext, type ObtainResult } from "./v5/dispatch.js";
 import type { BoxIR, HouseIR, TowerIR, WallIR, BridgeIR, GridIR } from "./ir.js";
 
 const server = new MinecraftServer();
 const undo = new UndoManager();
+// v5：現在対象（修正の参照先・FR-72）とライブラリ（GridIR キャッシュ・FR-70/71）。
+const session = new SessionState();
+const library = new Library(config.libraryDir);
 
 function includesAny(text: string, words: string[]): boolean {
   return words.some((w) => text.includes(w));
 }
+
+/**
+ * v5：subject → GridIR（ライブラリ命中なら決定論ロード、無ければ v4 生成して保存）。
+ * 2 回目以降は生成を呼ばず即・無生成で建つ（FR-71）。new / regen 経路が共用する。
+ */
+async function obtain(subject: string, size?: number): Promise<ObtainResult | null> {
+  // ライブラリは「既定サイズ」のアセットだけを貯める。サイズ明示時はキャッシュを使わず
+  // その場限りで生成（小さい/大きい指定が既定キャッシュを汚さない・上書きしない）。
+  const useCache = size === undefined;
+  const cachedName = useCache ? library.find(subject) : null;
+  if (cachedName) {
+    const ir = library.load(cachedName);
+    if (ir) {
+      log.info("ライブラリ命中：生成スキップ", { subject, name: cachedName });
+      return { ir, fromCache: true, mode: "3d" };
+    }
+  }
+  if (!pipelineEnabled()) {
+    log.warn("生成不可（v4 無効・ライブラリ未命中）", { subject });
+    return null;
+  }
+  // 生成中の通知は「実際に生成するとき」だけ（cache 命中時は即時なので出さない）。
+  await server.say(`§7「${subject}」を生成中…（少し時間がかかります）`);
+  const res = await resolveCharacterGrid(subject, size);
+  if (!res.ok) {
+    log.warn("v4 生成に失敗", { subject, error: res.error });
+    return null;
+  }
+  // 安全網：生成/フォールバック出力も parseIR で再検証してから採用する。
+  const parsed = parseIR(res.ir);
+  if (!parsed.ok || parsed.ir.type !== "grid") {
+    log.warn("生成結果が不正", { subject, reason: parsed.ok ? "型不一致" : parsed.error });
+    return null;
+  }
+  if (useCache) library.maybeSave(subject, parsed.ir); // 既定サイズの初回だけ貯める（2 回目以降は決定論ロード）
+  return { ir: parsed.ir, fromCache: false, mode: res.mode };
+}
+
+/** v5：dispatch に渡す副作用（Minecraft I/O・v4 生成）。座標/形はここで作らない。 */
+const editCtx: EditContext = {
+  session,
+  undo,
+  mc: {
+    run: (cmds) => server.runCommands(cmds).then(() => undefined),
+    say: (text) => server.say(text),
+    queryState: () => server.queryPlayerState(),
+  },
+  obtain,
+};
 
 async function handleBuild(utterance: string): Promise<void> {
   // v4：外部キーが設定済みなら、まず「キャラ取得 vs パラメトリック」を判定して振り分ける（①）。
@@ -32,7 +89,11 @@ async function handleBuild(utterance: string): Promise<void> {
   if (pipelineEnabled()) {
     const intent = await classifyIntent(utterance);
     if (intent.kind === "character") {
-      await handleMake(intent.subject, intent.targetHeight);
+      // v5：new 経路（ライブラリ cache→無ければ v4 生成）。建てたものは現在対象になる。
+      await dispatch(
+        { kind: "new", subject: intent.subject, ...(intent.targetHeight !== undefined ? { size: intent.targetHeight } : {}) },
+        editCtx,
+      );
       return;
     }
   }
@@ -216,6 +277,9 @@ async function placeAndBuildGrid(ir: GridIR, label: string): Promise<void> {
   await server.runCommands(built.commands);
   undo.record(built);
 
+  // v5：GridIR は修正の対象になりうるので現在対象として保持する（!grid / !voxelize / 生成 すべて）。
+  session.setCurrent({ gridIR: ir, origin, region: built.region, name: slug(label), subject: label });
+
   const { w, h, d } = ir.size;
   await server.say(`§a「${label}」を設置しました（${w}x${h}x${d} / 正面:${facing}）。取り消すには「もどして」。`);
 }
@@ -263,26 +327,18 @@ async function handleVoxelize(argline: string): Promise<void> {
 }
 
 /**
- * v4「喋るだけ」キャラ建築（①意図はすでに解決済み・②③④⑤＋fallback は orchestrate へ）。
- * 立体生成が破綻したら平面でフォールバックし、その旨を通知する（AC-38）。
+ * v5：フォローアップ修正発話の解釈と実行（明示トリガー＝editWords 起動）。
+ * 現在対象のメタ（size・palette・voxel は渡さない）から EditOp を分類し、ディスパッチする。
+ * 曖昧/形変更は dispatch 側が確認保留（pendingConfirm）にする（§6.5 / FR-81）。
  */
-async function handleMake(subject: string, targetHeight?: number): Promise<void> {
-  await server.say(`§7「${subject}」を生成中…（少し時間がかかります）`);
-  const res = await resolveCharacterGrid(subject, targetHeight);
-  if (!res.ok) {
-    await server.say(`§c「${subject}」を作れませんでした: ${res.error}`);
+async function handleEdit(utterance: string): Promise<void> {
+  const meta = session.currentMeta();
+  if (!meta) {
+    await server.say("§e直す対象がありません。先に何か建ててください。");
     return;
   }
-  // 安全網：ボクセル化/フォールバック出力も parseIR で再検証してから建てる。
-  const parsed = parseIR(res.ir);
-  if (!parsed.ok || parsed.ir.type !== "grid") {
-    await server.say(`§c生成結果が不正です: ${parsed.ok ? "型不一致" : parsed.error}`);
-    return;
-  }
-  if (res.mode === "flat") {
-    await server.say("§e立体生成に失敗したため、平面で建てます。");
-  }
-  await placeAndBuildGrid(parsed.ir, subject);
+  const op = await interpret(utterance, meta);
+  await dispatch(op, editCtx);
 }
 
 async function handleUndo(): Promise<void> {
@@ -317,9 +373,31 @@ function onMessage(body: PlayerMessageBody): void {
     return;
   }
 
+  // v5：確認保留中（曖昧/作り直し）なら、はい/いいえ を先に処理する（§6.5）。
+  const pending = session.getPending();
+  if (pending) {
+    if (includesAny(text, config.confirmYesWords)) {
+      session.clearPending();
+      dispatch(pending.op, editCtx, true).catch((e) => log.error("確認実行で例外", String(e)));
+      return;
+    }
+    if (includesAny(text, config.confirmNoWords)) {
+      session.clearPending();
+      server.say("§7作り直しをやめました。").catch((e) => log.error("say で例外", String(e)));
+      return;
+    }
+    // どちらでもなければ保留を破棄し、通常処理へフォールスルー（新しい指示を優先）。
+    session.clearPending();
+  }
+
   // 失敗してもプロセスを落とさない（§8）。各ハンドラ内で例外は握りつぶしてチャット通知。
   if (includesAny(text, config.undoWords)) {
     handleUndo().catch((e) => log.error("Undo 処理で例外", String(e)));
+    return;
+  }
+  // v5：修正の明示トリガー（editWords）。現在対象への修正発話を解釈・実行する。
+  if (includesAny(text, config.editWords)) {
+    handleEdit(text).catch((e) => log.error("修正処理で例外", String(e)));
     return;
   }
   if (includesAny(text, config.triggerWords)) {
