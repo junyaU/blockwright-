@@ -1,124 +1,80 @@
-# CLAUDE.md
+# CLAUDE.md — blockwright
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+ゲーム内チャット → Claude が意図を構造化 → 決定論コードが Minecraft Bedrock の実ブロックに変換する
+AI 建築システム。設計の背骨は `build(ir, origin)`（**IR seam**）一本。
+設計思想の正典は `DESIGN_PRINCIPLES.md`（10 原則）。各版の要件は `RequirementsV0〜V5.md`。
 
-## 現状
+## コマンド
+| 用途 | コマンド |
+|---|---|
+| 本番起動（WS を `0.0.0.0:<PORT>` で待受） | `npm start` |
+| ホットリロード開発 | `npm run dev` |
+| 型チェック | `npm run typecheck` |
+| テスト（Vitest・Minecraft 不要の決定論コア） | `npm test` |
+| WS 疎通スパイク（プロトコル検証） | `npm run spike` |
 
-v0（box）＋ v1（house）実装済み・実機で動作確認済み（2026-06-21）。チャットで指示 → Claude が box/house の IR を生成 → 決定論的に組み上げてプレイヤー前方に設置 → 「もどして」で取り消し、までのループが通っている。house は床・四方壁・ドア開口・窓・屋根（flat/gable）・style 塗り分け・facing(auto) に対応。
+**ゲーム内**（チート有効ワールドから `/connect <WSL host>:<PORT>`／語の定義は `config.ts`）：
+- 建築：`建てて`/`作って`/`架けて`/`build` 等（triggerWords）
+- Undo：`もどして`/`戻して`/`undo` 等（undoWords）
+- v5 修正：`なおして`/`反転`/`回転`/`動かして`/`大きく`/`小さく` 等（editWords）→ 現在対象を修正
+- dev 注入（LLM を通さない）：`!grid <name>`（fixtures/grid/）、`!voxelize <file>`（assets/）
 
-- **正典**：`RequirementsV0.md`（box）＋ `RequirementsV1.md`（house 差分）。`RequirementsV2.md` は次段の構想。設計判断で迷ったらまず仕様を読む。
-- **主要コマンド**（すべて動作確認済み）：
-  - `npm start` … 本番起動（WS サーバーを `0.0.0.0:<PORT>` で待受）
-  - `npm run spike` … WS 疎通実験スパイク（プロトコル検証用 `src/spike.ts`。本実装前の挙動確認に使う）
-  - `npm test` … Vitest（決定論的コアの単体テスト。Minecraft 不要）
-  - `npm run typecheck` … `tsc --noEmit`
-- **要セットアップ**：`.env` に `ANTHROPIC_API_KEY`（`.env.example` 参照、コミット禁止）。Minecraft（チート有効ワールド）から `/connect <WSL host>:<PORT>`。WSL2 ネットワークの注意点は後述。
+## セットアップ / 環境変数（`.env`・コミット禁止。`.env.example` 参照）
+| 変数 | 必須 | 効果 |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | ✅ | Claude。未設定だと建築時に明示失敗（spike は不要） |
+| `PORT` | | WS ポート（既定 19131） |
+| `MODEL` | | IR 生成モデル（既定 `claude-sonnet-4-6`） |
+| `SERPAPI_API_KEY` | | **設定すると v4 キャラ建築が有効化**。未設定なら「作って」はパラメトリック経路のみ |
+| `MESHY_API_KEY` | | image→3D。未設定/失敗時は v3.0 平面建築にフォールバック |
+| `DEFAULT_CHARACTER_HEIGHT` | | サイズ無指定キャラの高さ（既定 48、grid 軸上限 64） |
 
-## このプロジェクトとは
-
-ゲーム内チャット → Claude が意図を構造化 → 決定論的なコードがそれを Minecraft Bedrock の実ブロックに変換する。v0 のゴールは 1 本のループを最後まで通すこと：**「建ててと言う → 目の前に箱が建つ → 取り消せる」**。見た目の豪華さは明示的にスコープ外。
+**WSL2 の最重要ハマり**：WS は `0.0.0.0` バインド必須（`127.0.0.1` 固定にしない）。Windows から
+到達するには mirrored networking（または WSL IP 直結）＋ループバック例外の一度きり登録：
+`CheckNetIsolation LoopbackExempt -a -n="Microsoft.MinecraftUWP_8wekyb3d8bbwe"`
+誤ると症状は「無言の接続失敗」。
 
 ## アーキテクチャ：IR seam が背骨
-
 ```
-[1] 入力           [2] AI            [3] IR            [4] build()         [5] 設置
-チャット発言   ───▶ Claude API  ───▶ 中間表現      ───▶ コマンド変換   ───▶ MCへ送信
-(PlayerMessage)    意図を構造化      (JSON)             座標 / 素材        (WebSocket)
-                                     ★契約境界★        決定論的
+チャット → [AI] 意図を構造化 → [IR] 中間表現 → build(ir,origin) → コマンド → MC(WS)
+            上流（賢さ）          ★契約境界★      決定論（正確さ）
 ```
+v0〜v5 すべて **seam の上流に層を足しただけ**で、`build(ir, origin)` の署名は一度も変えていない。
+AI が関与するのは次の 3 点だけ（いずれも言語・分類のみ／座標・幾何・voxel 占有には触れない）：
+1. `claude.ts` — 発話 → パラメトリック IR（box/house/tower/wall/bridge）
+2. `pipeline/intent.ts` — 発話を character / parametric に分類（v4）
+3. `v5/interpret.ts` — フォローアップ発話 → EditOp 分類（v5）
 
-設計全体が [3] の **IR（中間表現）** に懸かっている。IR は AI の賢さ（上流）とコードの正確さ（下流）を分離する契約境界（seam）。コンポーネントは 4 つ：
+## 不変条件（破ってはならない — 根拠と全 10 原則は `DESIGN_PRINCIPLES.md`）
+1. **`build(ir, origin): BuildResult` は固定署名。** 表現力は `build.ts` の `switch` に型分岐を足して育てる。下流（座標・配置・Undo・送信）は再実装しない。
+2. **AI に生 `setblock`/`fill`/座標/voxel 占有を出させない。** AI が出すのは IR と分類だけ。
+3. **IR は絶対座標を持たない。** 「何を」だけ。「どこに」は `origin` 引数で外から与える。
+4. **座標・幾何・素材解決は決定論コードの責務。** AI に委ねない。
+5. **単一の失敗で全体を落とさない。** API/パース/コマンド/WS 切断は捕捉し、ゲーム内チャットで通知。無言で失敗しない。
+6. **素材は信頼してから施工時フォールバック**（allowlist で弾かない）。形式が妥当なら使い、MC が拒否（`statusCode≠0`）したら `minecraft:stone` で建て直す。`materials.ts`＋`index.ts`。
 
-- **C1 WebSocket サーバー** — Minecraft の `/connect` を待ち受け、イベントを購読し、コマンドを送る。
-- **C2 Claude クライアント** — チャット発言を IR の JSON だけに変換する（それ以外を出力させない）。
-- **C3 `build(ir, origin)`** — IR を `fill` コマンドに変換し、原点を解決し、素材を検証する。決定論的。
-- **C4 Undo マネージャ** — 設置した領域を記録し、`minecraft:air` で埋め戻す。
+## IR スキーマ（判別可能ユニオン・`ir.ts`）
+`type IR = BoxIR | HouseIR | TowerIR | WallIR | BridgeIR | GridIR`
+- `box` size+material+hollow? / `house` footprint+roof+door+windows / `tower` +cap(battlement) /
+  `wall` length+crenellation+gate / `bridge` span+railing+piers /
+  `grid` size+voxels[y][z][x]+palette（自由形状。v4/v5 のキャラはすべてここに合流）
+- `BuildResult = { region:{min,max:Vec3}, commands:string[] }`（絶対座標・Undo 用）
+- パース失敗時は**施工せず**チャット通知（リトライ 1 回が先）。検証/クランプは `parseIR`。
 
-## 不変条件 — 破ってはならない（これが v0 の眼目）
+## モジュール地図
+- **seam / core**：`build.ts`(switch分岐・fill体積分割) `ir.ts`(union+parseIR) `geometry.ts`(toWorld/transformBuilding/planPlacement/lookFromYaw) `materials.ts` `palette.ts`(style preset) `undo.ts`
+- **builders**：`house.ts` `tower.ts` `wall.ts` `bridge.ts` `grid.ts`（box は build.ts 内）
+- **v4 `pipeline/`**（喋るだけでキャラ生成・**個人ローカル限定**）：`intent.ts`→`image.ts`(SerpAPI)→`gen3d.ts`/`adapters/meshy.ts`(image→glb)→`cleanup.ts`→`gate.ts`、束ねは `orchestrate.ts`
+- **v5 `v5/`**（貯まる・直せる）：`session.ts`(現在対象+pendingConfirm) `library.ts`(GridIR を `library/*.json.gz`+index で永続化) `interpret.ts`(EditOp分類) `dispatch.ts`(recolor/rescale/mirror/rotate/move=決定論変形, regen=v4再生成) `transform.ts`(純粋変形)
+- **`voxelize/`**（参照を GridIR 化）：`index.ts`(拡張子振分) `image.ts`(jimp) `mesh.ts`(glTF) `occupancy.ts` `color.ts` `quantize.ts`
+- **infra**：`server.ts`(WS/暗号/runCommand/queryPlayerState/say) `encryption.ts` `index.ts`(配線・routing・各flow) `config.ts` `log.ts` `spike.ts`
 
-1. **`build(ir: IR, origin: Vec3): BuildResult` は固定署名。** 表現力は `build()` の中の `type` 分岐を増やして育てる（box → grid → house）。呼び出し側・原点解決・Undo・送信はノータッチのまま。`RequirementsV0.md` §2.3, §5, 付録B。
-2. **AI に生の `setblock`/`fill` 文字列を吐かせない。** AI が出すのは IR のみ。AI 生成のコマンド文字列を中継する実装は禁止（施工エンジンが無い＝後で全書き直しになる）。
-3. **IR は絶対座標を持たない。** 「何を建てるか」（サイズ・素材）だけを表し、「どこに」は持たない。場所は `origin` 引数で与えるので、同じ IR をどこにでも建てられる。
-4. **[4][5] は決定論的。** 座標計算と素材解決はコードの責務であり、AI には絶対に委ねない。
-5. **単一の失敗でプロセス全体を落とさない。** API・パース・コマンド・WS 切断の失敗は捕捉し、ユーザーにゲーム内チャットでフィードバックする。無言で失敗しない。
-6. **素材は「信頼してから施工時フォールバック」。** Minecraft の有効ブロックは膨大なので allowlist で弾かない。形式が妥当な ID は AI を信頼してそのまま使い、施工時に Minecraft が拒否（`statusCode≠0`）したらフォールバック素材（既定 `minecraft:stone`）で建て直す＝Minecraft 自身を最終バリデータにする。JE→BE エイリアスは補正。例外で全体を止めない。実装は `src/materials.ts`（正規化・エイリアス）＋ `src/index.ts` の `handleBuild`（施工時フォールバック）。
-7. **スコープ厳守。** §4.2「やらないこと」（grid/house IR、画像入力、建物タイプ複数化、ブロック単位の完全 Undo、マルチプレイヤー、永続化）は、簡単に見えても実装しない。将来への投資をしてよい唯一の場所は IR seam だけ。
+## 既知の非自明なハマり（コードから推測不能）
+- **プレイヤー y は目線位置。** `querytarget @s` の `position.y` は足元+1.62。`y-1.62` してから `floor`（補正しないと約 1 ブロック浮く）。x/z は補正不要、y は負値あり。
+- **`querytarget` の `body.details` は JSON 文字列**（二重パース）→ `[0].position`。成否は `commandResponse.body.statusCode`（0=成功）、`fill` は `fillCount`。
+- **WS は暗号化セッション必須**：secp384r1 + AES-256-CFB8。CFB8 はストリームなので cipher/decipher を**セッション中使い回す**。暗号文=バイナリ/平文=テキストフレームで判定（`isBinary` を見る／`enabled` フラグでは判定しない）。`PlayerMessage` は `header.eventName`／本文 `body.message`／送信者 `body.sender`。完全な実測仕様は `RequirementsV0.md` §11・付録A と `src/spike.ts`。
+- **`fill` に体積上限**：64³ 超は複数 fill に分割（`build.ts` の fillCommands が共用）。
+- **回転で fill の角が入れ替わる**：fill は両角を変換後に min/max を再計算（`geometry.ts`。崩れ/欠けの最頻バグ源）。
 
-## IR スキーマ（v0）
-
-`IR` は `type` で判別する判別可能ユニオン。v0 は `box` のみ。将来 `grid`/`house` を seam に触れず追加できる形で定義する。
-
-```ts
-type Vec3 = { x: number; y: number; z: number };
-type IR = BoxIR; // 将来: BoxIR | GridIR | HouseIR
-
-interface BoxIR {
-  type: "box";
-  size: { w: number; d: number; h: number }; // 整数、各 1..64
-  material: string;                            // BE ブロック ID、検証対象
-  hollow?: boolean;                            // 省略時 false
-}
-
-interface BuildResult {
-  region: { min: Vec3; max: Vec3 }; // 絶対座標、Undo 用
-  commands: string[];               // 送信したコマンド、ログ用
-}
-```
-
-Claude の出力をパースして IR にする。パース失敗・スキーマ不一致時は **施工せず**、チャットでユーザーに通知する（§6.2 に従いリトライ 1 回が先）。
-
-## このスタック固有の既知リスク（実装方針を固める前に検証すること）
-
-Minecraft の WebSocket プロトコルは **非公式**（Code Connection 由来）でバージョン差分がある。仕様の指示：思い込みで作り込む前に、**まず疎通実験**でイベント購読とコマンド実行が実際に効くことを確認する（`RequirementsV0.md` §11, 付録A）。下記は当初の懸念で、次節「確定した WS プロトコル」で実測により解決済み：
-
-- **相対座標 `~ ~ ~` がプレイヤーに解決しないことがある。** プレイヤーの絶対座標を問い合わせ、それを基準に施工する。問い合わせ手段は疎通実験で確定する。
-- **`fill` に体積上限がある。** 複数 `fill` に分割するかサイズをクランプする（64³ の箱は上限を超え得る）。
-- **WSL2 のネットワークが最大のハマりどころ。** WS サーバーは `0.0.0.0:<port>` にバインド必須（`127.0.0.1` 固定にしない）。Windows から到達するには mirrored networking（または WSL IP 直結）に加え、ループバック例外の一度きりの登録が要る（`CheckNetIsolation LoopbackExempt -a -n="Microsoft.MinecraftUWP_8wekyb3d8bbwe"`）。これを誤ると症状は「無言の接続失敗」。詳細は §3.2。
-
-## 確定した WS プロトコル（疎通実験で確認済み・2026-06-21）
-
-`src/spike.ts` での実測で以下を確定。実装はこの実形に従う（付録A の想定形ではなくこちらが正）。
-
-- **暗号化セッション必須**。未暗号で `subscribe` すると `statusMessage:"暗号化されたセッションが必要です"`（statusCode `-2147418107`）で拒否される。接続直後に `enableEncryption` ハンドシェイクが必要（`src/encryption.ts`）。
-  - 曲線は **secp384r1 (P-384)**。公開鍵は X.509 SPKI(DER) を base64 で授受。
-  - 鍵導出：`key = SHA256(salt(16B) || ECDH共有秘密)`（32B）、`IV = key[0:16]`、暗号は **AES-256-CFB8**。
-  - CFB8 はストリーム暗号なので cipher/decipher はセッション中**同一インスタンスを使い回す**（メッセージ毎に作り直さない）。
-  - ハンドシェイク応答は `header.messagePurpose:"ws:encrypt"`、`body.publicKey` に Minecraft 側公開鍵。**平文テキストで重複して届く**ことがある。
-- **フレーム種別で平文/暗号を判定する**。暗号文は**バイナリ**フレーム、平文 JSON は**テキスト**フレーム。`ws` の `message` の第2引数 `isBinary` で分岐する（`enabled` フラグで分岐しない — 暗号化確立後にも平文応答が届くため）。
-- **`PlayerMessage` の構造**：`header.eventName === "PlayerMessage"`、`header.messagePurpose === "event"`。本文は **`body.message`**、送信者は **`body.sender`**、種別は `body.type`（`"chat"`）。※`eventName` は body ではなく **header** にある。
-- **プレイヤー絶対座標**：`querytarget @s` を実行 → `commandResponse` の **`body.details` は JSON 文字列**（二重パースが必要）→ 配列 `[0].position {x,y,z}`（float）と `yRot`。ブロック座標へは `Math.floor` する。y は負値もありうる（地下世界）。
-  - ⚠ **`position.y` は足元ではなく目線(eye)位置**を返す（実測：足元 -60 のとき y=-58.38 ≈ -60 + 1.62）。足元に直すには `y - 1.62` してから floor する（補正しないと建物が約1ブロック浮く）。x/z は水平なので補正不要。
-- **コマンド成否**：`commandResponse` の `body.statusCode`（0 が成功）、`fill` は `body.fillCount` を返す。
-- 相対座標 `~` も `origin:{type:"player"}` で解決した（実測で fill 成功）。ただし Undo の領域記録に絶対座標が要るため、施工は `querytarget` の絶対座標基準で行う方針は維持する。
-
-## スタック & 構成（実装済み）
-
-Node.js v20+ / TypeScript（`tsx` で実行、`tsc` で型チェック）。サーバーに `ws`、Claude に `@anthropic-ai/sdk`、`requestId` に `crypto.randomUUID()`（メッセージ毎に UUIDv4）、設定に `dotenv`、テストに `vitest`。既定モデルは `claude-sonnet-4-6`（`MODEL` 環境変数で差し替え可）。
-
-`src/` 構成：
-- `index.ts` … 配線・トリガー判定・box施工時フォールバック・house配置(`planPlacement`)（`buildBoxFlow`/`buildHouseFlow`/`handleUndo`）
-- `server.ts` … C1 WS サーバー（暗号化・購読・`runCommand`・`queryPlayerState`(座標+yaw)・`say`）
-- `encryption.ts` … WS 暗号化（secp384r1 + AES-256-CFB8）
-- `claude.ts` … C2 発言→IR（box/house 両スキーマ・JSON のみ・フェンス除去・リトライ1回）
-- `ir.ts` … IR 型（`BoxIR | HouseIR`・`Palette`）・`parseIR`（box/house 振り分け・検証/クランプ）
-- `build.ts` … C3 `build(ir, origin)`（`switch` で box/house 分岐）・`fillCommands`（体積分割・共用）・hollow
-- `house.ts` … buildHouse＋小関数（floor/walls/corners/carveDoor/placeWindows/flat|gableRoof/gableEndFill）
-- `geometry.ts` … ローカル→ワールド変換（`toWorld`・min/max再計算・`transformHouse`・`planPlacement`/`lookFromYaw`）
-- `palette.ts` … style プリセット（rustic/stone/modern）＋ `resolvePalette`
-- `materials.ts` … 素材正規化・JE→BE エイリアス
-- `undo.ts` … C4 領域 Undo
-- `config.ts` … 設定（port/apiKey/model/トリガー語/Undo語/フォールバック素材）
-- `log.ts` … ロガー
-- `spike.ts` … 疎通実験スパイク（プロトコル検証用に保持）
-
-### v1 house の要点
-- 全形状を**ローカル空間**（lx∈[0,w-1], lz∈[0,d-1], ly∈[0,屋根頂]、正面壁=lz=0）で `LocalOp[]` として組み、`transformHouse` が facing 回転＋ワールド化する。AI は座標を一切持たない（パラメータのみ）。
-- 回転で fill の角が入れ替わるため、**fill は両角変換後に min/max を再計算**する（`geometry.ts`。崩れ/欠けの最頻バグ源）。
-- facing(auto)：`planPlacement` がプレイヤー yaw から「前方配置＋ドアがプレイヤー側」を決める。yaw→方位の規約は実機確認済み（`lookFromYaw`、Bedrock yaw 0≈+Z/south）。
-- palette はスロット辞書（wall/floor/roof/trim/window）。build 時に `resolveMaterial` で解決（box の施工時フォールバックとは別経路・簡略化）。
-
-外出し設定：ポート（既定 19131）、`ANTHROPIC_API_KEY`（`.env`、コミット禁止 — `.gitignore` 済み）、モデル名。トリガー語（漢字＋ひらがな）／Undo語／フォールバック素材は `config.ts`。
-
-## ロギングは必須要件
-
-WS API が非公式なため、デバッグはログに依存する。最低限ログに出すもの：(a) 送受信した全 WS メッセージ、(b) 生成した IR、(c) 送信したコマンド、(d) 素材フォールバック等の警告。info/warn/error のレベル分けを使う。
+## ロギングは必須要件（WS API が非公式なため）
+最低限：(a) 送受信 WS メッセージ全件、(b) 生成 IR、(c) 送信コマンド、(d) 素材フォールバック等の警告。info/warn/error を使い分ける（`log.ts`）。
