@@ -6,10 +6,10 @@
  * 橋脚は ly<0 へ降ろす（origin.y=プレイヤー足元基準）。
  * 構成：桁(deck) → 両側の欄干(railing) → （任意）橋脚(piers)。
  */
-import type { BridgeIR, Vec3, BuildResult, Facing, Palette } from "./ir.js";
+import type { BridgeIR, Vec3, BuildResult } from "./ir.js";
 import { BRIDGE_PIER_DEPTH } from "./ir.js";
-import { resolvePalette } from "./palette.js";
-import { transformBuilding, type LocalOp } from "./geometry.js";
+import { resolvePaletteLogged } from "./palette.js";
+import { transformBuilding, resolveFacing, type LocalOp } from "./geometry.js";
 import { fillOp, evenPositions } from "./house.js";
 import { log } from "./log.js";
 
@@ -35,14 +35,10 @@ function piers(ops: LocalOp[], span: number, width: number, depth: number, mater
 
 export function buildBridge(ir: BridgeIR, origin: Vec3): BuildResult {
   // 橋は石造が自然なので style 未指定時は "stone" を既定にする（palette 指定があればそちら優先）。
-  const { palette, warnings } = resolvePalette({ palette: ir.palette, style: ir.style ?? "stone" });
-  for (const wmsg of warnings) log.warn("palette解決", wmsg);
-  log.info("解決palette", palette);
-
-  const facing: Facing = ir.facing && ir.facing !== "auto" ? ir.facing : "south";
+  const pal = resolvePaletteLogged({ palette: ir.palette, style: ir.style ?? "stone" });
+  const facing = resolveFacing(ir.facing, "south");
   const span = ir.span;
   const width = ir.width;
-  const pal: Palette = palette;
   const pierMat = pal.trim ?? pal.wall;
 
   const ops: LocalOp[] = [];

@@ -5,9 +5,9 @@
  * 正面=lz=0）で `LocalOp[]` を積み、最後に transformBuilding でワールド化する。
  * 構成：壁本体スラブ → 通用門開口(air) → 上部胸壁(crenellation)。
  */
-import type { WallIR, Vec3, BuildResult, Facing, Palette } from "./ir.js";
-import { resolvePalette } from "./palette.js";
-import { transformBuilding, type LocalOp } from "./geometry.js";
+import type { WallIR, Vec3, BuildResult } from "./ir.js";
+import { resolvePaletteLogged } from "./palette.js";
+import { transformBuilding, resolveFacing, type LocalOp } from "./geometry.js";
 import { fillOp } from "./house.js";
 import { log } from "./log.js";
 
@@ -40,15 +40,11 @@ function crenellate(ops: LocalOp[], length: number, thickness: number, h: number
 
 export function buildWall(ir: WallIR, origin: Vec3): BuildResult {
   // 防壁は石造が自然なので style 未指定時は "stone" を既定にする（palette 指定があればそちら優先）。
-  const { palette, warnings } = resolvePalette({ palette: ir.palette, style: ir.style ?? "stone" });
-  for (const wmsg of warnings) log.warn("palette解決", wmsg);
-  log.info("解決palette", palette);
-
-  const facing: Facing = ir.facing && ir.facing !== "auto" ? ir.facing : "south";
+  const pal = resolvePaletteLogged({ palette: ir.palette, style: ir.style ?? "stone" });
+  const facing = resolveFacing(ir.facing, "south");
   const length = ir.length;
   const thickness = ir.thickness ?? 1;
   const h = ir.height;
-  const pal: Palette = palette;
   const merlonMat = pal.trim ?? pal.wall;
 
   const ops: LocalOp[] = [];

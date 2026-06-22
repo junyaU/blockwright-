@@ -8,9 +8,9 @@
  * 施工順（後工程が前工程を上書きして開口を作る）：
  *   床 → 四方の壁 → トリム(隅柱) → ドア開口(air) → 窓 → 屋根 → gable妻壁埋め
  */
-import type { HouseIR, Vec3, BuildResult, Facing, Palette } from "./ir.js";
-import { resolvePalette } from "./palette.js";
-import { transformBuilding, type LocalOp } from "./geometry.js";
+import type { HouseIR, Vec3, BuildResult } from "./ir.js";
+import { resolvePaletteLogged } from "./palette.js";
+import { transformBuilding, resolveFacing, type LocalOp } from "./geometry.js";
 import { log } from "./log.js";
 
 const AIR = "minecraft:air";
@@ -135,16 +135,12 @@ function gableRoof(ops: LocalOp[], w: number, d: number, h: number, ov: number, 
 }
 
 export function buildHouse(ir: HouseIR, origin: Vec3): BuildResult {
-  const { palette, warnings } = resolvePalette(ir);
-  for (const wmsg of warnings) log.warn("palette解決", wmsg);
-  log.info("解決palette", palette);
-
-  const facing: Facing = ir.facing && ir.facing !== "auto" ? ir.facing : "south";
+  const pal = resolvePaletteLogged(ir);
+  const facing = resolveFacing(ir.facing, "south");
   const w = ir.footprint.w;
   const d = ir.footprint.d;
   const h = ir.height;
   const ov = ir.roofOverhang ?? 1;
-  const pal: Palette = palette;
   const trim = pal.trim ?? pal.wall;
   const windowMat = pal.window ?? "minecraft:glass";
 
