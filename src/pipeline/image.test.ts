@@ -34,7 +34,7 @@ describe("selectBestImage（関連度順×正方形・サイズ条件／R4）", 
 
 describe("slug", () => {
   it("英数以外を _ に畳む", () => {
-    expect(slug("Kirby")).toBe("kirby");
-    expect(slug("ドラえもん Doraemon!")).toBe("doraemon");
+    expect(slug("Robot")).toBe("robot");
+    expect(slug("ねこ Cat!")).toBe("cat");
   });
 });

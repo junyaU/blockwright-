@@ -275,13 +275,13 @@ async function placeAndBuildGrid(ir: GridIR, label: string): Promise<void> {
  * v3 ボクセル化注入経路（開発用・§v3 §3）。★LLM を通さない★。
  * `assets/<file>` の画像/3Dモデルを GridIR にボクセル化して build に渡す。
  * 形（占有）は決定論コードが決め、AI は一切関与しない（R1）。
- * 例：!voxelize creeper.png 16 / !voxelize kirby.glb 20 solid
+ * 例：!voxelize sample.png 16 / !voxelize model.glb 20 solid
  */
 async function handleVoxelize(argline: string): Promise<void> {
   const args = argline.trim().split(/\s+/).filter(Boolean);
   const file = args[0];
   if (!file || !/^[a-z0-9_.-]+$/i.test(file)) {
-    await server.say("§e使い方：!voxelize <file> <size> [thickness|fill]（例 !voxelize creeper.png 16）。");
+    await server.say("§e使い方：!voxelize <file> <size> [thickness|fill]（例 !voxelize sample.png 16）。");
     return;
   }
   const size = args[1] !== undefined ? Number(args[1]) : undefined;
