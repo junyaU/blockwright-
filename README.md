@@ -96,7 +96,6 @@ flowchart LR
 ### 前提
 - Node.js 20 以上
 - Minecraft Bedrock（**チート有効**のワールド）
-- WSL2 で動かす場合はネットワーク設定（後述）
 
 ### インストール
 ```bash
@@ -124,12 +123,6 @@ Minecraft のチャットから接続：
 ```
 /connect <ホスト>:<PORT>
 ```
-
-> **⚠️ WSL2 の注意**：WS は `0.0.0.0` バインド必須。Windows から到達するには mirrored networking（または WSL IP 直結）に加え、ループバック例外の一度きりの登録が要る：
-> ```powershell
-> CheckNetIsolation LoopbackExempt -a -n="Microsoft.MinecraftUWP_8wekyb3d8bbwe"
-> ```
-> 誤ると症状は「無言の接続失敗」になる。
 
 ## 💬 ゲーム内コマンド
 
@@ -162,12 +155,6 @@ npm run spike     # WS プロトコル疎通スパイク
 ├── CLAUDE.md     # AI エージェント（Claude Code）向けガイド
 └── README.md     # ← 本ファイル（人間向け）
 ```
-
-## 🔍 技術的に難しかった点（見どころ）
-
-- **非公式 WebSocket プロトコルのリバースエンジニアリング**：Minecraft Bedrock の WS API は非公式。暗号化セッション必須（secp384r1 + AES-256-CFB8）、プレイヤー座標は目線位置で返る（足元へ −1.62 補正）、`querytarget` の応答は二重 JSON…といった実測仕様を `spike` で確定させてから実装した。
-- **AI と決定論の境界設計（IR seam）**：AI に生コマンドや座標を出させず、IR と分類だけに限定。施工の正確さを決定論コードに閉じ込め、AI の不確実性を建築品質から切り離した。
-- **素材は「信頼してから施工時フォールバック」**：膨大な有効ブロックを allowlist で弾かず、Minecraft 自身を最終バリデータにして、拒否時のみ石で建て直す。
 
 ## 📚 ドキュメント
 
