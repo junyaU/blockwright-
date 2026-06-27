@@ -100,8 +100,11 @@ async function replaceCurrent(
   await ctx.mc.say(sayMsg);
 }
 
-/** 新規 GridIR をプレイヤー前方へ配置し、現在対象にする（new / cache ロード）。 */
-async function placeAsCurrent(ctx: EditContext, got: ObtainResult, subject: string): Promise<void> {
+/**
+ * 新規 GridIR をプレイヤー前方へ配置し、現在対象にする（new / cache ロード）。
+ * v6：固有経路（リファレンス識別→生成）も index 側からこれを呼ぶため export する（ロジックは不変）。
+ */
+export async function placeAsCurrent(ctx: EditContext, got: ObtainResult, subject: string): Promise<void> {
   const state = await ctx.mc.queryState();
   if (!state) {
     await ctx.mc.say("§c座標が取得できませんでした。");
