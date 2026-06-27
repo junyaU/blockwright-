@@ -15,13 +15,17 @@ import { UndoManager } from "./undo.js";
 import { config, pipelineEnabled } from "./config.js";
 import { log, time } from "./log.js";
 import { voxelizeFile } from "./voxelize/index.js";
-import { classifyIntent } from "./pipeline/intent.js";
 import { resolveCharacterGrid } from "./pipeline/orchestrate.js";
 import { slug } from "./pipeline/image.js";
 import { SessionState } from "./v5/session.js";
 import { Library } from "./v5/library.js";
-import { interpret } from "./v5/interpret.js";
-import { dispatch, type EditContext, type ObtainResult } from "./v5/dispatch.js";
+import { interpret, type EditOp } from "./v5/interpret.js";
+import { dispatch, placeAsCurrent, type EditContext, type ObtainResult } from "./v5/dispatch.js";
+// v6：経路ルーター＋リファレンス識別（新規建築の生成元選択。v5 の編集/キャッシュ/削除は不変・FR-94）。
+import { classify, type Classification } from "./v6/classify.js";
+import { decideRoute, type RoutePolicy } from "./v6/route.js";
+import { identifyReference } from "./v6/reference.js";
+import { handleUnidentified } from "./v6/policy.js";
 import type { BoxIR, HouseIR, TowerIR, WallIR, BridgeIR, GridIR, Facing, Vec3 } from "./ir.js";
 
 const server = new MinecraftServer();
@@ -38,7 +42,7 @@ function includesAny(text: string, words: string[]): boolean {
  * v5：subject → GridIR（ライブラリ命中なら決定論ロード、無ければ v4 生成して保存）。
  * 2 回目以降は生成を呼ばず即・無生成で建つ（FR-71）。new / regen 経路が共用する。
  */
-async function obtain(subject: string, size?: number): Promise<ObtainResult | null> {
+async function obtain(subject: string, size?: number, refImagePath?: string): Promise<ObtainResult | null> {
   // ライブラリは「既定サイズ」のアセットだけを貯める。サイズ明示時はキャッシュを使わず
   // その場限りで生成（小さい/大きい指定が既定キャッシュを汚さない・上書きしない）。
   const useCache = size === undefined;
@@ -56,7 +60,8 @@ async function obtain(subject: string, size?: number): Promise<ObtainResult | nu
   }
   // 生成中の通知は「実際に生成するとき」だけ（cache 命中時は即時なので出さない）。
   await server.say(`§7「${subject}」を生成中…（少し時間がかかります）`);
-  const res = await resolveCharacterGrid(subject, size);
+  // v6：refImagePath があれば識別済み参照で生成（acquireImage をスキップ）。無ければ従来どおり。
+  const res = await resolveCharacterGrid(subject, size, refImagePath);
   if (!res.ok) {
     log.warn("v4 生成に失敗", { subject, error: res.error });
     return null;
@@ -113,19 +118,105 @@ async function buildAndPlace(
   return { origin, facing, built };
 }
 
+// v6：曖昧/低信頼の経路ポリシー（config から組み立て・decideRoute を純粋に保つため引数で渡す）。
+const routePolicy: RoutePolicy = {
+  ambiguity: config.v6AmbiguityPolicy,
+  confidenceThreshold: config.v6ClassifyConfidence,
+};
+
+/**
+ * v6 経路ルーター（新規建築の生成元選択・付録A）。
+ * 戻り値 true=ここで処理完了 / false=パラメトリックへ委譲（呼び出し側が generateIR→buildXFlow）。
+ * 分類 → キャッシュ最優先 → 経路決定 → generation / confirm を捌く。★形には触れない（分類と vision 判定のみ）。
+ */
+async function routeNewBuild(utterance: string): Promise<boolean> {
+  const c = await time("classify", () => classify(utterance)); // ①固有/ジェネリック/曖昧（AI 言語）
+  log.info("v6 分類", {
+    category: c.category,
+    subject: c.subject,
+    styleHint: c.styleHint,
+    size: c.size,
+    confidence: c.confidence,
+  });
+
+  // 分類不能（空 subject＝壊れ出力）はパラメトリックに委譲（発話のトリガー語を活かす）。
+  if (c.subject === "") return false;
+
+  // ②キャッシュ最優先（FR-92・AC-59）：既定サイズの既知 subject は決定論ロードで即建て。
+  // size 明示時は obtain と同じくキャッシュを使わない（既定アセットを汚さない）。
+  if (c.size === undefined && library.find(c.subject)) {
+    await dispatch({ kind: "new", subject: c.subject }, editCtx);
+    return true;
+  }
+
+  const decision = decideRoute(c, routePolicy); // ③決定論ディスパッチ
+  log.info("v6 経路決定", { decision, subject: c.subject });
+
+  if (decision.route === "parametric") return false; // 既存 generateIR→buildXFlow へ委譲
+
+  if (decision.route === "confirm") {
+    // 曖昧確認モード（§6.4）。v5 の はい/いいえ 保留フローをそのまま再利用する（v5 機構は不変）。
+    const op: EditOp = { kind: "new", subject: c.subject, ...(c.size !== undefined ? { size: c.size } : {}) };
+    const prompt = `§e「${c.subject}」を特定のものとして作りますか？（はい / いいえ）`;
+    session.setPending({ op, prompt });
+    await server.say(prompt);
+    return true;
+  }
+
+  await runGeneration(c, decision.strict); // generation
+  return true;
+}
+
+/**
+ * generation 経路。strict（固有/曖昧寄り）は vision リファレンス識別、
+ * strict:false（型なし汎用）は従来の acquireImage 経路（精度不要・vision 省略）。
+ */
+async function runGeneration(c: Classification, strict: boolean): Promise<void> {
+  if (!strict) {
+    // ジェネリック無型（城・教会等）→ 汎用生成（FR-87・AC-58）。既存 new 経路に委ねる。
+    await dispatch(
+      { kind: "new", subject: c.subject, ...(c.size !== undefined ? { size: c.size } : {}) },
+      editCtx,
+    );
+    return;
+  }
+
+  // 固有：正規化→候補→vision検証→最良1枚（FR-86/88/89・AC-53/55）。
+  // 検索＋vision は数秒かかるので、無言の間を作らない（原則10）。
+  await server.say(`§7「${c.subject}」の参照画像を探しています…`);
+  const ref = await time("identifyReference", () => identifyReference(c.subject, { strict: true }));
+  if (!ref || !ref.confident) {
+    // 同定不能：無言で建てず通知/平面（§6.5・FR-90・AC-56）。
+    await handleUnidentified(ref?.path ?? null, {
+      policy: config.v6UnidentifiedPolicy,
+      subject: c.subject,
+      say: (t) => server.say(t),
+      buildFromImage: async (path) => {
+        const got = await obtain(c.subject, c.size, path);
+        if (!got) return false;
+        await placeAsCurrent(editCtx, got, c.subject);
+        return true;
+      },
+    });
+    return;
+  }
+
+  // 識別済み参照で v4 生成（ライブラリ保存は obtain が担う＝2 回目はキャッシュ・FR-92）。
+  const got = await obtain(c.subject, c.size, ref.path);
+  if (!got) {
+    await server.say(`§c「${c.subject}」を作れませんでした。`);
+    return;
+  }
+  await placeAsCurrent(editCtx, got, c.subject);
+}
+
 async function handleBuild(utterance: string): Promise<void> {
-  // v4：外部キーが設定済みなら、まず「キャラ取得 vs パラメトリック」を判定して振り分ける（①）。
-  // 未設定なら v4 をスキップし、余分な Claude 呼び出しもせず従来どおり（§配線）。
+  // v6：外部キーが設定済みなら経路ルーターで振り分ける（①分類→②キャッシュ→③経路）。
+  // 未設定なら v6/v4 をスキップし、余分な Claude 呼び出しもせず従来パラメトリックのみ（§配線）。
   if (pipelineEnabled()) {
-    const intent = await time("classifyIntent", () => classifyIntent(utterance));
-    if (intent.kind === "character") {
-      // v5：new 経路（ライブラリ cache→無ければ v4 生成）。建てたものは現在対象になる。
-      await dispatch(
-        { kind: "new", subject: intent.subject, ...(intent.targetHeight !== undefined ? { size: intent.targetHeight } : {}) },
-        editCtx,
-      );
-      return;
-    }
+    const handled = await routeNewBuild(utterance);
+    if (handled) return; // generation / confirm / cache / 同定不能 はここで完了。
+    // parametric（型あり/分類不能）だけが下のパラメトリック経路へフォールスルーする。
   }
 
   const state = await server.queryPlayerState();

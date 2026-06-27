@@ -33,12 +33,32 @@ export interface Config {
   imageSearchApiKey: string;
   /** v4 ③image→3D（Meshy）キー。未設定なら立体生成不可（平面フォールバック）。 */
   meshyApiKey: string;
+  /** v6：曖昧/低信頼の経路ポリシー。"generation"=生成寄り（既定）/"confirm"=1問確認（§6.4）。 */
+  v6AmbiguityPolicy: "generation" | "confirm";
+  /** v6：固有の参照同定不能時のポリシー。"notify"=通知して停止（既定）/"flat"=最良候補で試行（§6.5）。 */
+  v6UnidentifiedPolicy: "notify" | "flat";
+  /** v6：分類の信頼度しきい値。これ未満は曖昧扱い（§6.4 / FR-96）。 */
+  v6ClassifyConfidence: number;
+  /** v6：リファレンス識別で取得する候補画像数（多めに取り webp 脱落分を吸収・§6.3）。 */
+  v6RefCandidates: number;
+  /** v6：vision 検証の採用スコアしきい値（0..1）。strict はこれを底上げ（§6.3 / FR-89）。 */
+  v6RefMinScore: number;
+  /** v6：vision 検証に使うモデル。未設定なら model を流用。 */
+  visionModel: string;
 }
 
 function intFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === "") return fallback;
   const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** 小数しきい値用（intFromEnv は整数専用なので分ける・v6 の confidence/score）。 */
+function numFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number.parseFloat(raw);
   return Number.isFinite(n) ? n : fallback;
 }
 
@@ -65,6 +85,13 @@ export const config: Config = {
   fallbackMaterial: "minecraft:stone",
   imageSearchApiKey: process.env.SERPAPI_API_KEY ?? "",
   meshyApiKey: process.env.MESHY_API_KEY ?? "",
+  // v6：経路ポリシー＆リファレンス識別の調整値（すべて env で変更可・FR-96）。
+  v6AmbiguityPolicy: process.env.V6_AMBIGUITY_POLICY?.trim() === "confirm" ? "confirm" : "generation",
+  v6UnidentifiedPolicy: process.env.V6_UNIDENTIFIED_POLICY?.trim() === "flat" ? "flat" : "notify",
+  v6ClassifyConfidence: numFromEnv("V6_CLASSIFY_CONFIDENCE", 0.6),
+  v6RefCandidates: intFromEnv("V6_REF_CANDIDATES", 8),
+  v6RefMinScore: numFromEnv("V6_REF_MIN_SCORE", 0.6),
+  visionModel: process.env.VISION_MODEL?.trim() || process.env.MODEL?.trim() || "claude-sonnet-4-6",
 };
 
 /**

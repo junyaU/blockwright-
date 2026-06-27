@@ -90,8 +90,8 @@ export type GenerateResult =
   | { ok: true; ir: IR; warnings: string[] }
   | { ok: false; error: string };
 
-/** Claude 出力テキストから JSON 本体を取り出す（前後の余分やコードフェンスを除去）。 */
-function extractJson(text: string): string {
+/** Claude 出力テキストから JSON 本体を取り出す（前後の余分やコードフェンスを除去）。v6 も再利用。 */
+export function extractJson(text: string): string {
   let t = text.trim();
   // ```json ... ``` のようなフェンスが付いていても剥がす。
   const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
