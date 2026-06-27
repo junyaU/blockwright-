@@ -13,7 +13,7 @@ import { parseIR } from "./ir.js";
 import { planPlacement } from "./geometry.js";
 import { UndoManager } from "./undo.js";
 import { config, pipelineEnabled } from "./config.js";
-import { log } from "./log.js";
+import { log, time } from "./log.js";
 import { voxelizeFile } from "./voxelize/index.js";
 import { classifyIntent } from "./pipeline/intent.js";
 import { resolveCharacterGrid } from "./pipeline/orchestrate.js";
@@ -106,7 +106,7 @@ async function buildAndPlace(
 
   const built = build(ir, origin);
   log.info("送信コマンド数", built.commands.length);
-  await server.runCommands(built.commands);
+  await time("runCommands", () => server.runCommands(built.commands), { count: built.commands.length });
   undo.record(built);
 
   await server.say(sayDone(facing));
@@ -117,7 +117,7 @@ async function handleBuild(utterance: string): Promise<void> {
   // v4：外部キーが設定済みなら、まず「キャラ取得 vs パラメトリック」を判定して振り分ける（①）。
   // 未設定なら v4 をスキップし、余分な Claude 呼び出しもせず従来どおり（§配線）。
   if (pipelineEnabled()) {
-    const intent = await classifyIntent(utterance);
+    const intent = await time("classifyIntent", () => classifyIntent(utterance));
     if (intent.kind === "character") {
       // v5：new 経路（ライブラリ cache→無ければ v4 生成）。建てたものは現在対象になる。
       await dispatch(
@@ -134,7 +134,7 @@ async function handleBuild(utterance: string): Promise<void> {
     return;
   }
 
-  const result = await generateIR(utterance);
+  const result = await time("generateIR", () => generateIR(utterance));
   if (!result.ok) {
     await server.say(`§c建築に失敗しました: ${result.error}`);
     return;
