@@ -18,8 +18,8 @@ describe("parseClassification (FR-84)", () => {
 
   it("size は明示時だけ・丸める", () => {
     expect(
-      parseClassification({ category: "specific", subject: "Pikachu", size: 40.4, confidence: 0.7 }),
-    ).toEqual({ category: "specific", subject: "Pikachu", size: 40, confidence: 0.7 });
+      parseClassification({ category: "specific", subject: "dragon", size: 40.4, confidence: 0.7 }),
+    ).toEqual({ category: "specific", subject: "dragon", size: 40, confidence: 0.7 });
   });
 
   it("size が数値でなければ無視", () => {

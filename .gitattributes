@@ -1,0 +1,10 @@
+# Repo is developed under WSL/Linux: enforce LF for all text files.
+# Prevents CRLF churn when Windows-side editors touch files on the WSL FS.
+* text=auto eol=lf
+
+# Binary assets — exclude from line-ending normalization.
+*.gz   binary
+*.glb  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary

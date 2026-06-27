@@ -49,9 +49,9 @@ describe("parseEditOp", () => {
 
   it("delete / regen / new", () => {
     expect(parseEditOp({ kind: "delete" })).toEqual({ kind: "delete" });
-    expect(parseEditOp({ kind: "regen", modifiedSubject: "Kirby with hat" })).toEqual({
+    expect(parseEditOp({ kind: "regen", modifiedSubject: "robot with hat" })).toEqual({
       kind: "regen",
-      modifiedSubject: "Kirby with hat",
+      modifiedSubject: "robot with hat",
     });
     expect(parseEditOp({ kind: "new", subject: "Dog", size: 20 })).toEqual({
       kind: "new",

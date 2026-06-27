@@ -28,3 +28,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Creeper デモ資産（Minecraft 固有要素・git 対象外/ローカル限定）
+assets/creeper.png
+scripts/gen-creeper.ts
