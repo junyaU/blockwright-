@@ -36,8 +36,17 @@ async function gridFromGlb(glb: string, targetHeight?: number): Promise<GridIR> 
   return ir;
 }
 
-/** subject → GridIR（立体経路、破綻時は②の画像で平面フォールバック）。 */
-export async function resolveCharacterGrid(subject: string, targetHeight?: number): Promise<ResolveResult> {
+/**
+ * subject → GridIR（立体経路、破綻時は②の画像で平面フォールバック）。
+ * v6：refImagePath を渡すと②の画像取得（acquireImage）を**上流で識別済みの参照**で置き換える
+ * （リファレンス識別＝v6 reference.ts が選んだ最良 1 枚）。下流（③生成・平面FB）は不変。
+ * ★ただし glb キャッシュ命中時は refImagePath を無視して既存 glb を再利用する（リピート時の意図どおり）。
+ */
+export async function resolveCharacterGrid(
+  subject: string,
+  targetHeight?: number,
+  refImagePath?: string,
+): Promise<ResolveResult> {
   // サイズ無指定なら設定の既定高さを使う（env DEFAULT_CHARACTER_HEIGHT で調整可）。
   const height = targetHeight ?? config.characterHeight;
   // キャッシュ命中：同じ subject の生成3Dが既にあれば、画像検索/Meshy を介さず再利用（数秒）。
@@ -46,15 +55,21 @@ export async function resolveCharacterGrid(subject: string, targetHeight?: numbe
   if (existsSync(cached)) {
     try {
       const ir = await gridFromGlb(cached, height);
-      log.info("キャッシュ命中：生成3Dを再利用（画像検索/Meshy をスキップ）", { glb: cached });
+      log.info("キャッシュ命中：生成3Dを再利用（画像検索/Meshy をスキップ）", {
+        glb: cached,
+        // v6：上流で参照を渡されていても glb 命中時は既存立体を優先する（明示ログ）。
+        refIgnored: refImagePath !== undefined,
+      });
       return { ok: true, ir, mode: "3d" };
     } catch (e) {
       log.warn("キャッシュ glb の再利用に失敗、通常生成へ", String(e));
     }
   }
 
-  const image = await acquireImage(subject); // ②（失敗＝平面も不可）
+  // v6：参照が識別済みならそれを使い、無ければ従来どおり acquireImage（②・失敗＝平面も不可）。
+  const image = refImagePath ? { path: refImagePath } : await acquireImage(subject);
   if (!image) return { ok: false, error: "参照画像を取得できませんでした" };
+  if (refImagePath) log.info("v6：識別済み参照を使用（acquireImage をスキップ）", { subject, refImagePath });
 
   try {
     if (!config.meshyApiKey.trim()) throw new Error("MESHY_API_KEY 未設定");
