@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { GridIR } from "../ir.js";
 import { config } from "../config.js";
-import { log } from "../log.js";
+import { log, time } from "../log.js";
 import { acquireImage, slug } from "./image.js";
 import { generate3D } from "./gen3d.js";
 import { cleanupMesh } from "./cleanup.js";
@@ -54,7 +54,7 @@ export async function resolveCharacterGrid(
   const cached = glbPathFor(subject);
   if (existsSync(cached)) {
     try {
-      const ir = await gridFromGlb(cached, height);
+      const ir = await time("gridFromGlb", () => gridFromGlb(cached, height), { mode: "cache-hit" });
       log.info("キャッシュ命中：生成3Dを再利用（画像検索/Meshy をスキップ）", {
         glb: cached,
         // v6：上流で参照を渡されていても glb 命中時は既存立体を優先する（明示ログ）。
@@ -67,19 +67,20 @@ export async function resolveCharacterGrid(
   }
 
   // v6：参照が識別済みならそれを使い、無ければ従来どおり acquireImage（②・失敗＝平面も不可）。
-  const image = refImagePath ? { path: refImagePath } : await acquireImage(subject);
+  // refImagePath がある時は acquireImage を踏まないので計時も不要（識別の計時は呼び出し側 identifyReference）。
+  const image = refImagePath ? { path: refImagePath } : await time("acquireImage", () => acquireImage(subject));
   if (!image) return { ok: false, error: "参照画像を取得できませんでした" };
   if (refImagePath) log.info("v6：識別済み参照を使用（acquireImage をスキップ）", { subject, refImagePath });
 
   try {
     if (!config.meshyApiKey.trim()) throw new Error("MESHY_API_KEY 未設定");
-    const glb = await generate3D(image.path, slug(subject)); // ③ ★原則破り★
-    const ir = await gridFromGlb(glb, height);
+    const glb = await time("generate3D", () => generate3D(image.path, slug(subject))); // ③ ★原則破り★
+    const ir = await time("gridFromGlb", () => gridFromGlb(glb, height), { mode: "3d" });
     return { ok: true, ir, mode: "3d" };
   } catch (e) {
     log.warn("立体生成に失敗、平面フォールバックへ", String(e));
     try {
-      const flat = await imageToGridIR(image.path, { target: height, thickness: 2 }); // v3.0 決定論
+      const flat = await time("imageToGridIR", () => imageToGridIR(image.path, { target: height, thickness: 2 }), { mode: "flat" }); // v3.0 決定論
       return { ok: true, ir: flat, mode: "flat" };
     } catch (e2) {
       return { ok: false, error: `平面フォールバックも失敗: ${String(e2)}` };

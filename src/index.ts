@@ -13,7 +13,7 @@ import { parseIR } from "./ir.js";
 import { planPlacement } from "./geometry.js";
 import { UndoManager } from "./undo.js";
 import { config, pipelineEnabled } from "./config.js";
-import { log } from "./log.js";
+import { log, time } from "./log.js";
 import { voxelizeFile } from "./voxelize/index.js";
 import { resolveCharacterGrid } from "./pipeline/orchestrate.js";
 import { slug } from "./pipeline/image.js";
@@ -111,7 +111,7 @@ async function buildAndPlace(
 
   const built = build(ir, origin);
   log.info("送信コマンド数", built.commands.length);
-  await server.runCommands(built.commands);
+  await time("runCommands", () => server.runCommands(built.commands), { count: built.commands.length });
   undo.record(built);
 
   await server.say(sayDone(facing));
@@ -130,7 +130,7 @@ const routePolicy: RoutePolicy = {
  * 分類 → キャッシュ最優先 → 経路決定 → generation / confirm を捌く。★形には触れない（分類と vision 判定のみ）。
  */
 async function routeNewBuild(utterance: string): Promise<boolean> {
-  const c = await classify(utterance); // ①固有/ジェネリック/曖昧（AI 言語）
+  const c = await time("classify", () => classify(utterance)); // ①固有/ジェネリック/曖昧（AI 言語）
   log.info("v6 分類", {
     category: c.category,
     subject: c.subject,
@@ -184,7 +184,7 @@ async function runGeneration(c: Classification, strict: boolean): Promise<void> 
   // 固有：正規化→候補→vision検証→最良1枚（FR-86/88/89・AC-53/55）。
   // 検索＋vision は数秒かかるので、無言の間を作らない（原則10）。
   await server.say(`§7「${c.subject}」の参照画像を探しています…`);
-  const ref = await identifyReference(c.subject, { strict: true });
+  const ref = await time("identifyReference", () => identifyReference(c.subject, { strict: true }));
   if (!ref || !ref.confident) {
     // 同定不能：無言で建てず通知/平面（§6.5・FR-90・AC-56）。
     await handleUnidentified(ref?.path ?? null, {
@@ -225,7 +225,7 @@ async function handleBuild(utterance: string): Promise<void> {
     return;
   }
 
-  const result = await generateIR(utterance);
+  const result = await time("generateIR", () => generateIR(utterance));
   if (!result.ok) {
     await server.say(`§c建築に失敗しました: ${result.error}`);
     return;
